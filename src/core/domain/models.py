@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from core.domain.calendar import SessionCalendar
+from core.domain.calendar import CalendarRangeError, SessionCalendar
 from core.domain.hashing import sha256_hex
 
 ZERO = Decimal("0")
@@ -206,6 +206,12 @@ class OrderContext:
         _normalize_utc(self, "evaluation_start_ts", "valid_until_ts")
         if self.valid_until_ts <= self.evaluation_start_ts:
             raise ValueError("valid_until_ts must be after evaluation_start_ts")
+        try:
+            self.calendar.next_expected_minute(
+                self.calendar.last_expected_minute_before(self.valid_until_ts)
+            )
+        except CalendarRangeError:
+            raise ValueError("calendar must cover at least one session after valid_until_ts") from None
 
 
 @dataclass(frozen=True)

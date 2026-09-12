@@ -105,3 +105,36 @@ def test_naive_datetime_and_invalid_sessions_rejected():
     ]
     with pytest.raises(ValueError):
         SessionCalendar(overlapping)
+
+
+def test_is_expected_minute_raises_past_loaded_range():
+    assert CAL.is_expected_minute(et("2025-12-03", "15:59"))
+    assert not CAL.is_expected_minute(et("2025-12-03", "16:00"))
+    assert not CAL.is_expected_minute(et("2025-12-04", "10:00", 30))
+    with pytest.raises(CalendarRangeError):
+        CAL.is_expected_minute(et("2025-12-04", "10:00"))
+
+
+def test_expected_minutes_raises_when_end_past_loaded_range():
+    with pytest.raises(CalendarRangeError):
+        CAL.expected_minutes(et("2025-12-03", "15:00"), et("2025-12-03", "16:01"))
+    with pytest.raises(CalendarRangeError):
+        CAL.expected_minutes(et("2025-12-03", "15:00"), et("2025-12-04", "10:00"))
+
+
+def test_expected_minutes_reaches_final_minute_of_last_session():
+    minutes = CAL.expected_minutes(et("2025-12-03", "15:00"), et("2025-12-03", "16:00"))
+    assert len(minutes) == 60
+    assert minutes[-1] == et("2025-12-03", "15:59")
+
+
+def test_order_context_requires_a_session_after_validity():
+    from core.domain.models import FillConfig, OrderContext
+    from tests.support import long_signal
+
+    begin = et("2025-12-03", "09:30")
+    with pytest.raises(ValueError, match="calendar must cover at least one session after valid_until_ts"):
+        OrderContext(long_signal(valid_sessions=1), FillConfig(), CAL, begin, et("2025-12-03", "16:00"))
+    ctx = OrderContext(long_signal(valid_sessions=1), FillConfig(), CAL, et("2025-12-02", "09:30"),
+                       et("2025-12-02", "16:00"))
+    assert ctx.valid_until_ts == et("2025-12-02", "16:00")

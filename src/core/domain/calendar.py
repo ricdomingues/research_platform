@@ -76,6 +76,10 @@ class SessionCalendar:
         ts = _require_utc(ts)
         if not _is_whole_minute(ts):
             return False
+        if ts > self._sessions[-1].close_utc:
+            raise CalendarRangeError(f"{ts.isoformat()} is after the loaded calendar")
+        if ts == self._sessions[-1].close_utc:
+            return False
         try:
             return self.session_containing(ts) is not None
         except CalendarRangeError:
@@ -99,18 +103,20 @@ class SessionCalendar:
     def expected_minutes(self, start: datetime, end: datetime) -> list[datetime]:
         start, end = _require_utc(start), _require_utc(end)
         minutes: list[datetime] = []
+        if end > self._sessions[-1].close_utc:
+            raise CalendarRangeError(f"{end.isoformat()} is after the loaded calendar")
         if end <= start:
             return minutes
         try:
             minute = self.first_expected_minute_at_or_after(start)
         except CalendarRangeError:
-            return minutes
+            return minutes  # start is past the last expected minute and end <= last close
         while minute < end:
             minutes.append(minute)
             try:
                 minute = self.next_expected_minute(minute)
             except CalendarRangeError:
-                break
+                break  # only the final minute of the last session; end <= its close
         return minutes
 
     def nth_session_close(self, first: Session, n: int) -> datetime:
