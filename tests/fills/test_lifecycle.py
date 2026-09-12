@@ -98,6 +98,22 @@ def test_freeze_blocks_market_events_and_flags_review():
     assert step(frozen.state, ENTRY, ctx).events == ()
 
 
+def test_freeze_is_idempotent_for_same_reason():
+    ctx = make_ctx()
+    first = freeze(new_order_state(ctx).state, "SPLIT", "2025-11-26")
+    second = freeze(first.state, "SPLIT", "2025-11-26")
+    assert second.events == ()
+    assert second.state is first.state
+
+
+def test_freeze_with_new_reason_on_frozen_order_still_flags():
+    ctx = make_ctx()
+    first = freeze(new_order_state(ctx).state, "SPLIT", "2025-11-26")
+    second = freeze(first.state, "INTEGRITY", "evt-1")
+    assert [e.event_key for e in second.events] == ["FROZEN:INTEGRITY", "NEEDS_REVIEW:INTEGRITY:evt-1"]
+    assert second.state.review_reasons == ("SPLIT", "INTEGRITY")
+
+
 def test_flag_review_does_not_duplicate_reason():
     state = new_order_state(make_ctx()).state
     once = flag_review(state, "DAILY_RANGE_MISMATCH", "2025-11-25")

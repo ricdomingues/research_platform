@@ -406,6 +406,8 @@ def cancel(state: OrderState, at: datetime, requested_by: str = "user") -> StepR
 def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
     if state.is_final:
         return StepResult(state)
+    if state.frozen and reason in state.review_reasons:
+        return StepResult(state)
     frozen_event = Event(EventType.FROZEN, f"FROZEN:{reason}", payload={"reason": reason, "ref": ref})
     review = flag_review(replace(state, frozen=True), reason, ref)
     return StepResult(review.state, (frozen_event,) + review.events)
