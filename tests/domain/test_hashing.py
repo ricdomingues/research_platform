@@ -61,3 +61,9 @@ def test_canonical_json_ignores_ambient_decimal_context():
     assert canonical_json(value) == expected
     with localcontext(Context(prec=12)):
         assert canonical_json(value) == expected
+
+
+@pytest.mark.parametrize("value", [{1: "x"}, {"outer": {UUID(int=1): "x"}}, [{None: 1}]])
+def test_non_string_dict_keys_are_rejected(value):
+    with pytest.raises(TypeError):
+        canonical_json(value)

@@ -168,7 +168,10 @@ class FillConfig:
             raise ValueError("risk_amount must be positive")
         if not ZERO < self.target1_scale_out_pct < Decimal("100"):
             raise ValueError("target1_scale_out_pct must be in (0, 100)")
-        for name in ("entry_slippage_bps", "stop_slippage_bps", "commission_per_execution"):
+        for name in (
+            "entry_slippage_bps", "stop_slippage_bps", "commission_per_execution", "sec_fee_rate",
+            "taf_fee_per_share", "taf_fee_max", "crosscheck_tolerance_pct", "dividend_tolerance",
+        ):
             if getattr(self, name) < ZERO:
                 raise ValueError(f"{name} must be >= 0")
         if self.data_gap_minutes < 1:

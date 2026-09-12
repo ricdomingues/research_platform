@@ -143,3 +143,13 @@ def test_position_metrics_ignore_ambient_decimal_context():
     with localcontext(Context(prec=12)):
         assert r_multiple(state, D(3)) == expected_r
         assert excursion_r(state, Direction.LONG) == expected_excursion
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["sec_fee_rate", "taf_fee_per_share", "taf_fee_max", "crosscheck_tolerance_pct", "dividend_tolerance"],
+)
+def test_fill_config_rejects_negative_fee_and_tolerance_fields(name):
+    with pytest.raises(ValueError, match=name):
+        FillConfig(**{name: D("-0.01")})
+    FillConfig(**{name: D(0)})

@@ -54,8 +54,9 @@ def test_apply_validity_end_when_last_bar_missing():
     opened = run_bars(new_order_state(ctx).state, [ENTRY, last_seen], ctx)
     assert apply_validity_end(opened.state, ctx, last_seen, et("2025-11-25", "15:45")).events == ()
     closed = apply_validity_end(opened.state, ctx, last_seen, et("2025-11-25", "16:30"))
-    assert types(closed.events) == [EventType.TIME_EXIT]
+    assert types(closed.events) == [EventType.TIME_EXIT, EventType.NEEDS_REVIEW]
     assert closed.events[0].bar_ts == et("2025-11-25", "15:30")
+    assert closed.events[1].event_key == "NEEDS_REVIEW:STALE_EXIT_BAR:2025-11-25T21:00:00+00:00"
     with pytest.raises(ValueError):
         apply_validity_end(opened.state, ctx, ENTRY, et("2025-11-25", "16:30"))
 
@@ -167,3 +168,47 @@ def test_engine_ignores_ambient_decimal_context():
     assert low_events == events
     assert low_hashes == hashes
     assert low_state == state
+
+
+def test_stale_exit_bar_is_flagged_for_review():
+    ctx = make_ctx(long_signal(valid_sessions=2))
+    last_seen = bar(et("2025-11-25", "10:00"), 103, 103.5, 102.5, 103)
+    opened = run_bars(new_order_state(ctx).state, [ENTRY, last_seen], ctx)
+    result = apply_validity_end(opened.state, ctx, last_seen, ctx.valid_until_ts)
+    assert [e.event_key for e in result.events] == [
+        "TIME_EXIT", "NEEDS_REVIEW:STALE_EXIT_BAR:2025-11-26T21:00:00+00:00",
+    ]
+    assert result.events[0].bar_ts == et("2025-11-25", "10:00")
+    assert result.events[0].price == D("102.9485")
+    assert result.events[1].payload == {"reason": "STALE_EXIT_BAR", "ref": "2025-11-26T21:00:00+00:00"}
+    assert result.state.status is OrderStatus.CLOSED
+    assert result.state.close_reason is CloseReason.TIME_EXIT
+    assert result.state.review_reasons == ("STALE_EXIT_BAR",)
+
+
+def test_stale_exit_bar_flag_for_short_keeps_adverse_price():
+    ctx = make_ctx(long_signal(direction=Direction.SHORT, stop=D(105), target1=D(96),
+                               target2=D(92), valid_sessions=2))
+    entry = bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101)
+    last_seen = bar(et("2025-11-25", "10:00"), 99, 99.5, 98.5, 99)
+    opened = run_bars(new_order_state(ctx).state, [entry, last_seen], ctx)
+    result = apply_validity_end(opened.state, ctx, last_seen, ctx.valid_until_ts)
+    assert types(result.events) == [EventType.TIME_EXIT, EventType.NEEDS_REVIEW]
+    assert result.events[0].price == D("99.0495")
+    assert result.state.avg_entry == D(101) and result.state.stop_current == D(105)
+    assert result.state.review_reasons == ("STALE_EXIT_BAR",)
+
+
+def test_exit_bar_on_last_expected_minute_is_not_flagged():
+    from core.domain.models import OrderState
+
+    ctx = one_session_ctx()
+    last = bar(et("2025-11-25", "15:59"), 103, 103.5, 102.5, 103)
+    state = OrderState(
+        status=OrderStatus.OPEN, avg_entry=D(101), initial_stop=D(97), stop_current=D(97),
+        qty_total=D(25), qty_open=D(25), opened_at=et("2025-11-25", "09:30"),
+        last_bar_ts=et("2025-11-25", "15:59"),
+    )
+    result = apply_validity_end(state, ctx, last, et("2025-11-25", "16:00"))
+    assert types(result.events) == [EventType.TIME_EXIT]
+    assert result.state.review_reasons == ()

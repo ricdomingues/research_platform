@@ -400,6 +400,9 @@ def apply_validity_end(
     if not is_long:
         work_state = mirror_state(work_state)
         events = [mirror_event(event) for event in events]
+    if last_bar.ts != ctx.calendar.last_expected_minute_before(ctx.valid_until_ts):
+        review = flag_review(work_state, "STALE_EXIT_BAR", ctx.valid_until_ts.isoformat())
+        return StepResult(review.state, tuple(events) + review.events)
     return StepResult(work_state, tuple(events))
 
 
