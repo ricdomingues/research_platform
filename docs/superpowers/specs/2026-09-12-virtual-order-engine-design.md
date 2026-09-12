@@ -1,8 +1,8 @@
 # Motor de Ordens Virtuais + Registro de Sinais (Ações EUA) — Design
 
 - **Data:** 2026-09-12
-- **Revisão:** 5 — ordem manual somente enquanto a hipotética estiver `PENDING`; auditoria do estado herdado
-- **Status:** **SPEC v1.0 FROZEN** (tag git `spec/virtual-order-engine-v1.0`)
+- **Revisão:** 6 — emenda de esclarecimento v1.1: decisões D1 (candle parcial no clique) e D2 (reconstrução da projeção)
+- **Status:** **SPEC v1.1 FROZEN** (v1.0 em `spec/virtual-order-engine-v1.0`; v1.1 = v1.0 + seção 10)
 - **Sub-projeto:** 01 da Research Platform
 
 ## 0. Regra de congelamento
@@ -152,7 +152,7 @@ order_events       -- APPEND-ONLY
   bar_batch_id uuid NULL, payload jsonb, recorded_at timestamptz
   UNIQUE (order_id, seq), UNIQUE (order_id, event_key)
 
-order_state        -- projeção, reconstruível
+order_state        -- projeção/cache, reconstruível pelo histórico autoritativo (seção 10, D2)
   order_id PK, status, zone_lost boolean, entry_eligible_from timestamptz NULL,
   trigger_hit_at timestamptz NULL, entry_path text NULL (DIRECT|RECLAIMED),
   avg_entry, initial_stop, stop_current, stop_active_from timestamptz NULL,
@@ -565,7 +565,7 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
 | Worker cai no meio do ciclo | Transação por ordem; retoma pelo cursor |
 | Worker e API na mesma ordem | `SELECT … FOR UPDATE` (5.2) |
 | Alteração de histórico | Role sem `UPDATE`/`DELETE` nas tabelas append-only + trigger que rejeita |
-| Projeção inconsistente | Comando `rebuild-projections` a partir dos eventos |
+| Projeção inconsistente | Comando `rebuild-projections` a partir do histórico autoritativo (seção 10, D2); divergência entre projeção reconstruída e armazenada → `PROJECTION_INTEGRITY_ERROR` |
 
 ## 7. Testes (TDD)
 
@@ -638,3 +638,43 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
 Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 + Alembic, PostgreSQL 16, APScheduler,
 `pandas_market_calendars`, `alpaca-py`, `yfinance`, `httpx`, NumPy, Streamlit, Plotly,
 pytest + Hypothesis, Docker Compose, `uv`.
+
+## 10. Emenda v1.1 — decisões após a execução do Plano 1
+
+Esclarecimentos aprovados pelo responsável pela spec. Não alteram regras de fill da seção 4.
+
+### D1 — Candle parcialmente anterior à decisão não é usado
+
+- Um candle cujo intervalo `[m, m+1min)` contém o instante de decisão (`created_at` com segundos ou
+  microssegundos) não é usado **nem** pela actionability **nem** pela ordem `MANUAL_USER`: o OHLC mistura
+  informação anterior e posterior à decisão, e a regra "nunca inferir trajetória intrabar" prevalece.
+- Clique alinhado ao início do minuto (ex.: 10:30:00): o candle 10:30 é o primeiro da ordem manual.
+  Clique dentro do minuto (10:30:01 … 10:30:59): a actionability processa até o candle 10:29, o candle 10:30
+  é ignorado e a ordem manual começa em 10:31. Formalmente
+  `evaluation_start_ts = ceil_to_expected_minute(created_at)` (já definido em 3.4).
+- **Auditoria:** quando um candle é ignorado por essa regra, o payload de `ORDER_CREATED` da ordem manual
+  grava `partial_bar_skipped: true` e `skipped_bar_ts` (início do minuto ignorado); caso contrário
+  `partial_bar_skipped: false` e `skipped_bar_ts: null`. Não é um `order_event` próprio.
+- Válido para swing com candles de 1 minuto; motores com ticks ou streaming podem definir outra resolução
+  em versão própria.
+
+### D2 — Reconstrução da projeção
+
+- `order_state` **não** é reconstruível somente a partir de `order_events`. Campos analíticos e de cursor
+  (`best_price`/`worst_price` para MFE/MAE, `last_bar_ts`, entre outros) não são fatos econômicos e não
+  viram eventos (proibido criar eventos por candle, como `BAR_PROCESSED` ou `MFE_UPDATED`).
+- O histórico autoritativo append-only tem três tipos de fatos:
+  1. **Fatos de domínio:** `order_events`.
+  2. **Fatos de avaliação:** `evaluation_runs`, `evaluation_run_status`, `order_eval_segments`
+     (quais candles foram vistos, quando, `data_as_of`, `selected_data_hash`).
+  3. **Fatos de mercado:** `bar_batches`, `bars_1m` (OHLCV efetivamente utilizado).
+- `order_state` é projeção/cache reconstruível desse conjunto: `rebuild_projection(order)` reexecuta o
+  `fill_model` da ordem sobre os candles de cada segmento lidos as-of o `data_as_of` do respectivo run,
+  partindo de `ORDER_CREATED` (incluindo estado herdado), aplica os eventos não derivados de candles
+  (`CANCELED`, `FROZEN`, `DIVIDEND`, `NEEDS_REVIEW`, `DATA_QUALITY`, `DATA_GAP`) na posição registrada e
+  exige que os eventos regerados sejam idênticos (`event_key` e `payload_hash`) aos armazenados.
+- A projeção persistida guarda todos os campos de `OrderState` necessários para retomar `step()`.
+- Divergência entre projeção reconstruída e armazenada, ou entre eventos regerados e armazenados →
+  `PROJECTION_INTEGRITY_ERROR` (registrado em `integrity_incidents`; ordem `frozen`).
+- **Teste de integração obrigatório (Plano 2):** criar ordem → processar ~200 candles → fechar → salvar
+  projeção A → apagar `order_state` → reconstruir → projeção B → `A == B`.
