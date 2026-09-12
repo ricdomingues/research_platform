@@ -1,8 +1,8 @@
 # Motor de Ordens Virtuais + Registro de Sinais (Ações EUA) — Design
 
 - **Data:** 2026-09-12
-- **Revisão:** 3 — relógio de avaliação, snapshot de dados, idempotência estrita, custos e janela de qualidade
-- **Status:** aguardando aprovação para congelamento como **SPEC v1.0 FROZEN**
+- **Revisão:** 4 — actionability de ordens manuais, hash de dados selecionados por run, definição formal do pregão 1
+- **Status:** aguardando confirmação final para congelamento como **SPEC v1.0 FROZEN**
 - **Sub-projeto:** 01 da Research Platform
 
 ## 0. Regra de congelamento
@@ -159,11 +159,16 @@ order_state        -- projeção, reconstruível
   opened_at, closed_at, final_event_ts timestamptz NULL, last_bar_ts,
   expected_bars int, missing_bars int, needs_review boolean, frozen boolean
 
-evaluation_runs    -- APPEND-ONLY; um por ciclo do worker ou execução de replay
-  run_id uuid PK, kind text (LIVE|REPLAY), data_as_of timestamptz, started_at, finished_at
+evaluation_runs    -- APPEND-ONLY; um por ciclo do worker, replay ou verificação de actionability
+  run_id uuid PK, kind text (LIVE|REPLAY|ACTIONABILITY), data_as_of timestamptz,
+  code_version text, started_at timestamptz
+
+evaluation_run_status -- APPEND-ONLY; status atual = linha mais recente do run
+  run_id uuid FK, status text (RUNNING|COMPLETED|FAILED), recorded_at timestamptz, detail jsonb
 
 order_eval_segments -- APPEND-ONLY; quais candles cada run processou para cada ordem
-  order_id uuid FK, run_id uuid FK, bar_from timestamptz, bar_to timestamptz
+  order_id uuid FK, run_id uuid FK, bar_from timestamptz, bar_to timestamptz,
+  selected_data_hash text
   PK (order_id, run_id)
 
 bar_batches        -- APPEND-ONLY; proveniência de cada ingestão
@@ -236,18 +241,50 @@ parâmetros da seção 8 marcados como "sim".
   fechamento, fins de semana e feriados. Nunca `bar_ts + 1 min` nem "próximo candle recebido".
   Se o minuto esperado não tiver candle, a condição passa a valer a partir do primeiro candle com
   `bar_ts ≥` esse minuto.
-- **`evaluation_start_ts`** = primeiro minuto esperado `m` com `m ≥ created_at`, em que
-  `created_at` é o do **sinal** para `AUTO_STRATEGY` e o da **própria ordem** para `MANUAL_USER`.
-  Exemplos (ET): criado 08:00 → 09:30 do mesmo pregão; 10:30:00 → 10:30; 10:30:20 → 10:31;
-  15:59:30 → 09:30 do próximo pregão.
+- **`evaluation_start_ts`** = início do primeiro minuto esperado `m` com `m ≥ created_at`, ou seja,
+  o primeiro candle **completo** cujo intervalo `[m, m+1min)` começa em ou após a criação da decisão,
+  sem usar informação anterior a ela. `created_at` é o do **sinal** para `AUTO_STRATEGY` e o da
+  **própria ordem** para `MANUAL_USER`. Exemplos (ET): criado 08:00 → 09:30 do mesmo pregão;
+  10:30:00 → 10:30; 10:30:18 → 10:31; 15:59:30 → 09:30 do próximo pregão; 12:59:30 em meio pregão
+  com fechamento às 13:00 → 09:30 do próximo pregão.
 - **Invariante de domínio:** nenhum evento dependente de mercado pode ter
   `bar_ts < evaluation_start_ts`. `step()` descarta candles anteriores, e o `ledger` rejeita
   qualquer evento que viole a invariante com `IntegrityError` (3.3).
-- **Validade:** o pregão 1 é o pregão que contém o `evaluation_start_ts` do sinal. Sinal criado
-  durante o pregão conta o pregão atual. `signals.valid_until_ts` = fechamento do pregão
-  `valid_sessions`.
-- **Ordem manual:** `orders.valid_until_ts = signals.valid_until_ts` (mesmo horizonte da tese).
-  Criar ordem manual com `evaluation_start_ts > valid_until_ts` → `422`.
+- **Validade:** **o pregão 1 é a sessão regular que contém o `evaluation_start_ts` do sinal.**
+  `signals.valid_until_ts` = fechamento do pregão `valid_sessions`.
+- **Ordem manual:** herda o vencimento absoluto do sinal (`orders.valid_until_ts =
+  signals.valid_until_ts`); selecionar o sinal mais tarde significa ter menos tempo, nunca pregões
+  adicionais. Criar ordem manual com `evaluation_start_ts ≥ valid_until_ts` → `422 SIGNAL_EXPIRED`.
+
+### 3.4.1 Actionability do sinal (ordens manuais)
+
+Uma ordem `MANUAL_USER` não pode ser criada apenas porque o prazo do sinal não expirou. A tese
+não pode ser "ressuscitada" com hindsight.
+
+- **Função pura de domínio:** `signal_actionability(signal, bars, calendar, fill_model, config, as_of_T)
+  -> Actionability{actionable: bool, reason, gating_state}`. Ela simula uma ordem hipotética do
+  sinal, com as mesmas regras de `fill_model`, do `evaluation_start_ts` do **sinal** até o último
+  candle completo com `bar_ts + 1min ≤ T`, onde `T = order.created_at`. Não depende da existência de
+  ordem `AUTO_STRATEGY` (a API permite `auto_order=false`).
+- **Dados:** candles lidos as-of `T` (3.6). A verificação grava um `evaluation_runs` de tipo
+  `ACTIONABILITY` com `data_as_of = T` e `selected_data_hash`; o `run_id` e o resultado ficam no
+  payload de `ORDER_CREATED`.
+- **Não acionável** se a ordem hipotética atingiu qualquer estado final antes de `T`:
+
+  | Estado hipotético | Resposta |
+  |---|---|
+  | `INVALIDATED` (stop sem posição ou `ZONE_LOST_POLICY=CANCEL`) | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=INVALIDATED`) |
+  | `CLOSED` por stop (inclusive breakeven) | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=STOPPED`) |
+  | `CLOSED` por target final | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=TARGET_REACHED`) |
+  | `EXPIRED` / `TIME_EXIT` | `422 SIGNAL_EXPIRED` |
+
+- **Estado herdado:** se acionável, a ordem manual começa `PENDING` com o **estado de
+  elegibilidade** da ordem hipotética em `T`: `zone_lost`, `entry_eligible_from` e `trigger_hit_at`.
+  Assim, um usuário que clica quando a zona está perdida precisa aguardar `ZONE_RECLAIMED` como a
+  estratégia aguardaria. Se a ordem hipotética estiver `OPEN`/`PARTIAL`, a manual herda apenas
+  `trigger_hit_at` (zona não perdida) e aguarda sua própria entrada.
+- **Dados indisponíveis** para a verificação (falha da Alpaca, cobertura insuficiente) → `503
+  ACTIONABILITY_UNVERIFIABLE`; a ordem não é criada.
 
 ### 3.5 Estados
 
@@ -272,7 +309,15 @@ cancelamento humano ou por replay em nova ordem.
 
 - **Leitura as-of:** para um instante `T`, a versão de um candle `(ticker, ts, source)` é a linha
   com maior `ingested_at ≤ T` (desempate por `batch_id`). Como `bars_1m` e `bar_batches` são
-  append-only, a leitura as-of é determinística para sempre.
+  append-only, a leitura as-of é determinística para sempre. A leitura "atual" é apenas
+  `as_of(now)`, usada somente por `RECALCULATE` e pelo dashboard; **nenhuma avaliação live ou
+  `REPRODUCE` usa a versão mais recente sem limite de `ingested_at`.**
+- **Candles ausentes são reproduzíveis:** um minuto sem candle as-of `T` continua ausente ao reproduzir
+  o run, mesmo que o fornecedor o entregue depois. A pergunta respondida é "o que o algoritmo sabia
+  naquele instante", não "o que se sabe hoje".
+- **`selected_data_hash`:** SHA-256 da lista ordenada, para cada minuto esperado do segmento, de
+  `(ticker, ts, batch_id, open, high, low, close, volume)` ou `(ticker, ts, MISSING)`. Em `REPRODUCE`, o
+  hash reconstruído deve ser igual ao armazenado; divergência é `IntegrityError`.
 - **Ordens live:** cada ciclo do worker cria um `evaluation_runs` com `data_as_of` = instante do
   início do ciclo e grava em `order_eval_segments` o intervalo `[bar_from, bar_to]` processado por
   ordem. A versão exata de cada candle usado é recuperável: candles do segmento lidos as-of o
@@ -280,12 +325,14 @@ cancelamento humano ou por replay em nova ordem.
 - **Snapshots:** `market_data_snapshots` fixa `data_as_of`, fonte, tickers e intervalo, com
   `content_manifest_hash` = SHA-256 da lista ordenada `(ticker, ts, batch_id)` selecionada.
 - **Replay em dois modos** (`POST /replay`):
-  - `REPRODUCE` — para cada ordem de origem, reprocessa usando exatamente os segmentos e
-    `data_as_of` originais, com a mesma `fill_model_version` e `config_snapshot`. O resultado
-    **deve** ser idêntico evento a evento; qualquer divergência é `IntegrityError`.
-  - `RECALCULATE` — cria (ou reutiliza) um `market_data_snapshot` com o `data_as_of` informado
-    (padrão: agora) e reprocessa os sinais com a versão/configuração informadas. A nova ordem grava
-    `market_data_snapshot_id`.
+  - `REPRODUCE` — "reproduza exatamente o que aconteceu". Para cada ordem de origem, reprocessa
+    usando exatamente os segmentos e `data_as_of` originais, com a mesma `fill_model_version` e
+    `config_snapshot`. `selected_data_hash` e eventos **devem** ser idênticos; divergência é
+    `IntegrityError`.
+  - `RECALCULATE` — "qual teria sido o resultado com o histórico corrigido". Cria (ou reutiliza) um
+    `market_data_snapshot` com o `data_as_of` informado (padrão: agora) e reprocessa os sinais com a
+    versão/configuração informadas. A nova ordem grava `market_data_snapshot_id`. Diferença em relação
+    ao resultado live é **informação, não erro**, e é exibida na comparação original × replay.
 - Replays criam **novas ordens** (`replay=true`, `replay_of_order_id`) com o mesmo
   `evaluation_start_ts` e `valid_until_ts` da ordem de origem; nada existente é alterado.
 
@@ -430,7 +477,7 @@ Autenticação: header `X-API-Key` com chave única via variável de ambiente.
 |---|---|
 | `POST /signals` | Cria sinal (3.3); cria ordem `AUTO_STRATEGY` salvo `auto_order=false`. `200` se já existente com mesmo hash, `201` se criado, `409` se conflito, `422` se inválido |
 | `GET /signals?date&strategy` | Lista sinais |
-| `POST /signals/{id}/orders` | Cria ordem `MANUAL_USER` (3.4) |
+| `POST /signals/{id}/orders` | Cria ordem `MANUAL_USER` (3.4, 3.4.1). `201`; `422 SIGNAL_EXPIRED`; `422 SIGNAL_NO_LONGER_ACTIONABLE` com `reason`; `503 ACTIONABILITY_UNVERIFIABLE` |
 | `POST /orders/{id}/cancel` | Cancela ordem não final |
 | `GET /orders?status&origin&strategy&replay&needs_review` | Lista ordens com estado projetado |
 | `GET /orders/{id}` | Detalhe, eventos, segmentos, qualidade de dados, candles do período |
@@ -498,6 +545,9 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
 | yfinance / FMP indisponíveis | Dividendos não validados e minutos não verificáveis → `NEEDS_REVIEW` com motivo; nenhum crédito |
 | Sinal inválido | `422` (3.8) |
 | `client_signal_id` repetido com payload diferente | `409 IDEMPOTENCY_CONFLICT` |
+| Ordem manual sobre sinal vencido ou com tese finalizada | `422 SIGNAL_EXPIRED` / `422 SIGNAL_NO_LONGER_ACTIONABLE` (3.4.1) |
+| Dados indisponíveis para verificar actionability | `503 ACTIONABILITY_UNVERIFIABLE`; ordem não criada |
+| `selected_data_hash` reconstruído diverge em `REPRODUCE` | `IntegrityError` |
 | Mesmo `event_key` com hash diferente | `IntegrityError`, `integrity_incidents`, ordem `frozen` (3.3) |
 | Evento com `bar_ts < evaluation_start_ts` | `IntegrityError` (3.4) |
 | Replay `REPRODUCE` divergente | `IntegrityError` com diff de eventos |
@@ -520,7 +570,11 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
   - `ZONE_LOST_POLICY=CANCEL`;
   - sinal criado às 11:30 com o preço dentro da zona às 10:00 → nenhum evento antes de 11:30;
   - ordem manual criada às 14:00 sobre sinal das 08:00 → nenhum evento antes de 14:00; validade igual à do sinal;
-  - `evaluation_start_ts` para 08:00, 10:30:00, 10:30:20, 15:59:30 e véspera de feriado;
+  - sinal às 09:40, stop atingido sem posição às 10:20, ordem manual às 13:00 → `SIGNAL_NO_LONGER_ACTIONABLE` (`INVALIDATED`);
+  - ordem hipotética estopada / com target final antes do clique → `STOPPED` / `TARGET_REACHED`;
+  - ordem manual criada com zona perdida → herda `zone_lost` e só entra após `ZONE_RECLAIMED`;
+  - `signal_actionability` é pura: mesmos candles e `T` → mesmo resultado, independente de existir ordem `AUTO_STRATEGY`;
+  - `evaluation_start_ts` para 08:00, 10:30:00, 10:30:18, 15:59:30, 12:59:30 em meio pregão e véspera de feriado;
   - comissão cobrada em entrada, target 1 e stop (3 execuções);
   - split com ordem `PENDING` → `FROZEN:SPLIT`.
 - **Propriedades (Hypothesis)** sobre sequências aleatórias de candles e sinais válidos:
@@ -536,7 +590,8 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
 - **Integração** — Postgres real em Docker: idempotência estrita (mesmo hash → no-op; hash diferente →
   `IntegrityError` e incidente), `409` em `POST /signals`, trigger append-only, advisory lock, disputa
   cancel × worker com `FOR UPDATE`, leitura as-of com lote corrigido posterior, `REPRODUCE` idêntico após
-  correção do fornecedor, `RECALCULATE` usando a correção, rotas via `httpx`.
+  correção do fornecedor (incluindo `selected_data_hash`), candle ausente no run entregue depois continua
+  ausente em `REPRODUCE`, `RECALCULATE` usando a correção, rotas via `httpx`.
 - **Dados de mercado** — fixtures gravadas de Alpaca, yfinance e FMP; nenhum teste acessa rede.
 - **Ponta a ponta** — pregão histórico gravado: sinal → ordem → eventos → projeção → métricas
   comparados a resultado esperado; em seguida `REPRODUCE` idêntico.
