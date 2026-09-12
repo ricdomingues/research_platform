@@ -228,6 +228,15 @@ class OrderState:
     frozen: bool = False
     review_reasons: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        _require_aware(self.entry_eligible_from, "entry_eligible_from")
+        _require_aware(self.trigger_hit_at, "trigger_hit_at")
+        _require_aware(self.stop_active_from, "stop_active_from")
+        _require_aware(self.opened_at, "opened_at")
+        _require_aware(self.closed_at, "closed_at")
+        _require_aware(self.final_event_ts, "final_event_ts")
+        _require_aware(self.last_bar_ts, "last_bar_ts")
+
     @property
     def is_final(self) -> bool:
         return self.status in FINAL_STATUSES
@@ -252,6 +261,8 @@ class Event:
 
     def __post_init__(self) -> None:
         _require_aware(self.bar_ts, "bar_ts")
+        if self.bar_ts is not None and (self.bar_ts.second or self.bar_ts.microsecond):
+            raise ValueError("bar_ts must be a whole minute")
         if self.type in MARKET_EVENT_TYPES and self.bar_ts is None:
             raise ValueError(f"{self.type} requires bar_ts")
 

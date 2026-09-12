@@ -91,3 +91,13 @@ def test_position_metrics_long_and_short():
     short_state = OrderState(avg_entry=D(100), initial_stop=D(104), best_price=D(92), worst_price=D(102))
     assert excursion_r(short_state, Direction.SHORT) == (D(2), D("-0.5"))
     assert excursion_r(OrderState(), Direction.LONG) == (None, None)
+
+
+def test_order_state_rejects_naive_datetimes():
+    with pytest.raises(ValueError):
+        OrderState(opened_at=datetime(2025, 11, 25, 15, 0))
+
+
+def test_event_rejects_bar_ts_with_seconds():
+    with pytest.raises(ValueError):
+        Event(EventType.FILLED, "FILLED", et("2025-11-25", "10:00", 5))
