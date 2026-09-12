@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 
+from core.domain.hashing import sha256_hex
+
 ONE_MINUTE = timedelta(minutes=1)
 
 
@@ -125,6 +127,11 @@ class SessionCalendar:
             raise CalendarRangeError(f"session {n} after {first.day} is not loaded")
         return self._sessions[index].close_utc
 
+    def is_session_close(self, ts: datetime) -> bool:
+        ts = _require_utc(ts)
+        index = bisect.bisect_left(self._closes, ts)
+        return index < len(self._closes) and self._closes[index] == ts
+
     def last_expected_minute_before(self, ts: datetime) -> datetime:
         ts = _require_utc(ts)
         index = bisect.bisect_left(self._opens, ts) - 1
@@ -133,6 +140,25 @@ class SessionCalendar:
         candidate = min(ts, self._sessions[index].close_utc)
         floored = candidate.replace(second=0, microsecond=0)
         return floored - ONE_MINUTE if floored == candidate else floored
+
+
+def calendar_window_hash(
+    calendar: SessionCalendar, evaluation_start_ts: datetime, valid_until_ts: datetime
+) -> str:
+    """Identity of the sessions an order depends on: from the session containing
+    `evaluation_start_ts` through the first session opening after `valid_until_ts`, inclusive."""
+    evaluation_start_ts, valid_until_ts = _require_utc(evaluation_start_ts), _require_utc(valid_until_ts)
+    first = calendar.session_containing(evaluation_start_ts)
+    if first is None:
+        raise ValueError("evaluation_start_ts must fall inside a loaded session")
+    start_index = calendar.sessions.index(first)
+    end_index = bisect.bisect_right([s.open_utc for s in calendar.sessions], valid_until_ts)
+    if end_index >= len(calendar.sessions):
+        raise CalendarRangeError(f"no session loaded after {valid_until_ts.isoformat()}")
+    return sha256_hex([
+        {"day": s.day, "open_utc": s.open_utc, "close_utc": s.close_utc}
+        for s in calendar.sessions[start_index : end_index + 1]
+    ])
 
 
 def evaluation_start_ts(calendar: SessionCalendar, created_at: datetime) -> datetime:

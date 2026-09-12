@@ -215,6 +215,23 @@ def test_extra_payload_cannot_override_reserved_keys():
     result = new_order_state(ctx, extra_payload={"actionability_run_id": "r1"})
     assert result.events[0].payload["actionability_run_id"] == "r1"
 
+    try:
+        new_order_state(ctx, extra_payload={"calendar_sessions_hash": "x"})
+        assert False, "should raise ValueError"
+    except ValueError as e:
+        assert "calendar_sessions_hash" in str(e)
+
+
+def test_order_created_records_calendar_sessions_hash():
+    from core.domain.calendar import calendar_window_hash
+
+    ctx = make_ctx()
+    (created,) = new_order_state(ctx).events
+    assert created.payload["calendar_sessions_hash"] == calendar_window_hash(
+        ctx.calendar, ctx.evaluation_start_ts, ctx.valid_until_ts
+    )
+    assert len(created.payload["calendar_sessions_hash"]) == 64
+
 
 def test_et_aware_bar_produces_same_event_key_and_hash_as_utc_bar():
     from datetime import timezone

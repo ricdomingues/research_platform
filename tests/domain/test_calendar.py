@@ -162,6 +162,59 @@ def test_expected_minutes_returns_empty_when_start_is_after_final_minute():
     assert CAL.expected_minutes(et("2025-12-03", "16:00"), et("2025-12-03", "16:00")) == []
 
 
+def _with_session(calendar, day, close_hm=None, drop=False):
+    sessions = []
+    for session in calendar.sessions:
+        if session.day == date.fromisoformat(day):
+            if drop:
+                continue
+            session = Session(session.day, session.open_utc, et(day, close_hm))
+        sessions.append(session)
+    return SessionCalendar(sessions)
+
+
+def test_calendar_window_hash_covers_window_plus_next_session():
+    from core.domain.calendar import calendar_window_hash
+    from core.domain.hashing import sha256_hex
+
+    begin, until = et("2025-11-25", "10:00"), et("2025-11-26", "16:00")
+    base = calendar_window_hash(CAL, begin, until)
+    assert base == calendar_window_hash(make_calendar(), begin, until)
+    expected = sha256_hex([
+        {"day": s.day, "open_utc": s.open_utc, "close_utc": s.close_utc}
+        for s in CAL.sessions if date(2025, 11, 25) <= s.day <= date(2025, 11, 28)
+    ])
+    assert base == expected
+    # Sessions inside the window (including the first session after valid_until_ts) matter.
+    assert calendar_window_hash(_with_session(CAL, "2025-11-25", "13:00"), begin, until) != base
+    assert calendar_window_hash(_with_session(CAL, "2025-11-28", "12:00"), begin, until) != base
+    # Sessions outside the window do not.
+    assert calendar_window_hash(_with_session(CAL, "2025-11-24", "13:00"), begin, until) == base
+    assert calendar_window_hash(_with_session(CAL, "2025-12-01", "13:00"), begin, until) == base
+    assert calendar_window_hash(_with_session(CAL, "2025-12-03", drop=True), begin, until) == base
+    with pytest.raises(CalendarRangeError):
+        calendar_window_hash(CAL, et("2025-12-03", "10:00"), et("2025-12-03", "16:00"))
+
+
+def test_order_context_pins_time_basis_to_calendar():
+    from core.domain.models import FillConfig, OrderContext
+    from tests.support import long_signal
+
+    signal = long_signal(valid_sessions=1)
+    with pytest.raises(ValueError, match="evaluation_start_ts"):
+        OrderContext(signal, FillConfig(), CAL, et("2025-11-25", "10:30", 18), et("2025-11-25", "16:00"))
+    with pytest.raises(ValueError, match="evaluation_start_ts"):
+        OrderContext(signal, FillConfig(), CAL, et("2025-11-25", "08:00"), et("2025-11-25", "16:00"))
+    with pytest.raises(ValueError, match="evaluation_start_ts"):
+        OrderContext(signal, FillConfig(), CAL, et("2025-11-24", "08:00"), et("2025-11-25", "16:00"))
+    with pytest.raises(ValueError, match="valid_until_ts"):
+        OrderContext(signal, FillConfig(), CAL, et("2025-11-25", "10:30"), et("2025-11-25", "15:00"))
+    with pytest.raises(ValueError, match="valid_until_ts"):
+        OrderContext(signal, FillConfig(), CAL, et("2025-11-25", "10:30"), et("2025-11-27", "16:00"))
+    ctx = OrderContext(signal, FillConfig(), CAL, et("2025-11-25", "10:30"), et("2025-11-25", "16:00"))
+    assert ctx.valid_until_ts == et("2025-11-25", "16:00")
+
+
 def test_order_context_requires_a_session_after_validity():
     from core.domain.models import FillConfig, OrderContext
     from tests.support import long_signal

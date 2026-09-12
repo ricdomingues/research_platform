@@ -116,8 +116,9 @@ def test_datetimes_are_normalized_to_utc():
     assert session.open_utc.tzinfo is timezone.utc and session.close_utc.tzinfo is timezone.utc
     assert session.open_utc == open_et
 
+    # valid_until_ts must be a loaded session close (R3); 2025-11-27 is Thanksgiving.
     ctx = OrderContext(long_signal(), FillConfig(), make_calendar(), open_et,
-                       datetime(2025, 11, 27, 16, 0, tzinfo=ny))
+                       datetime(2025, 11, 26, 16, 0, tzinfo=ny))
     assert ctx.evaluation_start_ts.tzinfo is timezone.utc
     assert ctx.valid_until_ts.tzinfo is timezone.utc
 

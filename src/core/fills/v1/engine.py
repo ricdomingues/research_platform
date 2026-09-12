@@ -12,6 +12,7 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping, TypeVar
 
+from core.domain.calendar import calendar_window_hash
 from core.domain.hashing import sha256_hex
 from core.domain.models import (
     ZERO,
@@ -103,6 +104,9 @@ def new_order_state(
         "config": ctx.config.snapshot(),
         "evaluation_start_ts": ctx.evaluation_start_ts,
         "valid_until_ts": ctx.valid_until_ts,
+        "calendar_sessions_hash": calendar_window_hash(
+            ctx.calendar, ctx.evaluation_start_ts, ctx.valid_until_ts
+        ),
         "inherited_signal_state": inherited_payload,
         "inherited_signal_state_hash": inherited_hash,
     }

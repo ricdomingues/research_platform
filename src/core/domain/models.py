@@ -251,6 +251,14 @@ class OrderContext:
         if self.valid_until_ts <= self.evaluation_start_ts:
             raise ValueError("valid_until_ts must be after evaluation_start_ts")
         try:
+            start_is_expected = self.calendar.is_expected_minute(self.evaluation_start_ts)
+        except CalendarRangeError:
+            start_is_expected = False
+        if not start_is_expected:
+            raise ValueError("evaluation_start_ts must be an expected minute of the loaded calendar")
+        if not self.calendar.is_session_close(self.valid_until_ts):
+            raise ValueError("valid_until_ts must equal the close of a loaded session")
+        try:
             self.calendar.next_expected_minute(
                 self.calendar.last_expected_minute_before(self.valid_until_ts)
             )
