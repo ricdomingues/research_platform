@@ -156,3 +156,30 @@ def test_zone_cross_fill_and_stop_in_same_candle():
     assert stopped.price == D("96.9515")
     assert stopped.payload["pnl"] == D("-100.97")
     assert result.state.status is OrderStatus.CLOSED
+
+
+SHORT_SIGNAL = dict(direction=Direction.SHORT, stop=D(105), target1=D(96), target2=D(92))
+
+
+def test_short_exit_buy_pays_no_sec_taf_fee():
+    config = FillConfig(commission_per_execution=D(1), sec_taf_fees_enabled=True,
+                        sec_fee_rate=D("0.0001"), taf_fee_per_share=D("0.01"), taf_fee_max=D(5))
+    ctx = make_ctx(long_signal(**SHORT_SIGNAL), config)
+    first = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101))
+    assert first.events[0].payload["cost"] == D("1.5025")
+    result = step(first.state, bar(et("2025-11-25", "09:31"), 104, 105.5, 103.5, 105), ctx)
+    (stopped,) = result.events
+    assert stopped.type is EventType.STOPPED
+    assert stopped.payload["cost"] == D(1)
+    assert result.state.costs == D("2.5025")
+
+
+def test_short_gap_through_stop_fills_at_open_with_slippage():
+    ctx = make_ctx(long_signal(**SHORT_SIGNAL))
+    first = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101))
+    result = step(first.state, bar(et("2025-11-25", "09:31"), 107, 107.5, 106.5, 107), ctx)
+    (stopped,) = result.events
+    assert stopped.type is EventType.STOPPED
+    assert stopped.payload["raw_price"] == D(107)
+    assert stopped.price == D("107.0535")
+    assert result.state.status is OrderStatus.CLOSED

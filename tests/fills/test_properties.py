@@ -255,6 +255,12 @@ def test_short_mirror_matches_long(scenario):
     for long_event, short_event in zip(long_result.events, short_result.events):
         assert short_event.price == _mirror_price(long_event.price)
         assert short_event.qty == long_event.qty
+        assert set(short_event.payload) == set(long_event.payload)
+        for key, long_value in long_event.payload.items():
+            if key.endswith(("_price", "_level")):
+                assert short_event.payload[key] == _mirror_price(long_value), key
+            else:
+                assert short_event.payload[key] == long_value, key
     risk = ctx.config.risk_amount
     assert r_multiple(long_result.state, risk) == r_multiple(short_result.state, risk)
 
