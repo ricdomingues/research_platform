@@ -10,6 +10,12 @@ from core.domain.calendar import Session, SessionCalendar
 
 
 def load_nyse_calendar(start: date, end: date) -> SessionCalendar:
+    """Load XNYS sessions for [start, end].
+
+    Callers must pad the range: load at least one session before the earliest timestamp they
+    will query (queries before the first loaded open raise CalendarRangeError) and at least one
+    session after `valid_until_ts` (OrderContext requires it).
+    """
     schedule = mcal.get_calendar("XNYS").schedule(
         start_date=start.isoformat(), end_date=end.isoformat()
     )

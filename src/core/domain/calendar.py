@@ -59,7 +59,9 @@ class SessionCalendar:
         return self._sessions
 
     def _check_lower(self, ts: datetime) -> None:
-        if ts < self._sessions[0].open_utc - timedelta(hours=24):
+        # No allowance: a query before the first loaded open could silently skip a real,
+        # unloaded session. Callers must load at least one session before their earliest query.
+        if ts < self._sessions[0].open_utc:
             raise CalendarRangeError(f"{ts.isoformat()} is before the loaded calendar")
 
     def session_containing(self, ts: datetime) -> Session | None:
@@ -80,10 +82,7 @@ class SessionCalendar:
             raise CalendarRangeError(f"{ts.isoformat()} is after the loaded calendar")
         if ts == self._sessions[-1].close_utc:
             return False
-        try:
-            return self.session_containing(ts) is not None
-        except CalendarRangeError:
-            return False
+        return self.session_containing(ts) is not None
 
     def first_expected_minute_at_or_after(self, ts: datetime) -> datetime:
         ts = _require_utc(ts)
@@ -103,20 +102,19 @@ class SessionCalendar:
     def expected_minutes(self, start: datetime, end: datetime) -> list[datetime]:
         start, end = _require_utc(start), _require_utc(end)
         minutes: list[datetime] = []
-        if end > self._sessions[-1].close_utc:
+        self._check_lower(start)
+        last_close = self._sessions[-1].close_utc
+        if end > last_close:
             raise CalendarRangeError(f"{end.isoformat()} is after the loaded calendar")
-        if end <= start:
-            return minutes
-        try:
-            minute = self.first_expected_minute_at_or_after(start)
-        except CalendarRangeError:
-            return minutes  # start is past the last expected minute and end <= last close
+        final_minute = last_close - ONE_MINUTE
+        if end <= start or start > final_minute:
+            return minutes  # empty range, or start past the final minute with end <= last close
+        minute = self.first_expected_minute_at_or_after(start)
         while minute < end:
             minutes.append(minute)
-            try:
-                minute = self.next_expected_minute(minute)
-            except CalendarRangeError:
-                break  # only the final minute of the last session; end <= its close
+            if minute == final_minute:
+                break  # stop cleanly: no expected minute follows the last loaded session
+            minute = self.next_expected_minute(minute)
         return minutes
 
     def nth_session_close(self, first: Session, n: int) -> datetime:

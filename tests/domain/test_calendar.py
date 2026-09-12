@@ -128,6 +128,40 @@ def test_expected_minutes_reaches_final_minute_of_last_session():
     assert minutes[-1] == et("2025-12-03", "15:59")
 
 
+def test_queries_before_first_loaded_open_raise():
+    # Loaded from Tue 2025-11-25 although Mon 2025-11-24 is a real session: no silent answers.
+    from_tuesday = SessionCalendar([s for s in CAL.sessions if s.day >= date(2025, 11, 25)])
+    monday = et("2025-11-24", "15:00")
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.first_expected_minute_at_or_after(monday)
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.is_expected_minute(monday)
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.session_containing(monday)
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.expected_minutes(et("2025-11-20", "10:00"), et("2025-11-25", "10:00"))
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.next_expected_minute(et("2025-11-25", "09:28"))
+    with pytest.raises(CalendarRangeError):
+        from_tuesday.expected_minutes(et("2025-11-25", "09:29"), et("2025-11-25", "09:29"))
+    # Non-whole minutes are never expected minutes, even out of range.
+    assert not from_tuesday.is_expected_minute(et("2025-11-24", "15:00", 30))
+    # The first loaded open itself is in range.
+    first_open = et("2025-11-25", "09:30")
+    assert from_tuesday.is_expected_minute(first_open)
+    assert from_tuesday.first_expected_minute_at_or_after(first_open) == first_open
+    assert from_tuesday.session_containing(first_open).day == date(2025, 11, 25)
+    assert from_tuesday.expected_minutes(first_open, et("2025-11-25", "09:32")) == [
+        first_open, et("2025-11-25", "09:31"),
+    ]
+    assert from_tuesday.next_expected_minute(et("2025-11-25", "09:29")) == first_open
+
+
+def test_expected_minutes_returns_empty_when_start_is_after_final_minute():
+    assert CAL.expected_minutes(et("2025-12-03", "15:59", 30), et("2025-12-03", "16:00")) == []
+    assert CAL.expected_minutes(et("2025-12-03", "16:00"), et("2025-12-03", "16:00")) == []
+
+
 def test_order_context_requires_a_session_after_validity():
     from core.domain.models import FillConfig, OrderContext
     from tests.support import long_signal
