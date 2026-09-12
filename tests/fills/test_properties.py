@@ -1,8 +1,9 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, find, given, settings
 from hypothesis import strategies as st
+from hypothesis.errors import NoSuchExample
 
 from core.domain.calendar import evaluation_start_ts, signal_valid_until_ts
 from core.domain.models import (
@@ -14,6 +15,7 @@ from tests.support import et, make_calendar
 
 CAL = make_calendar()
 MINUTES = CAL.expected_minutes(et("2025-11-24", "09:30"), et("2025-12-03", "16:00"))
+MINUTE_INDEX = {minute: index for index, minute in enumerate(MINUTES)}
 FIRST_THREE_SESSIONS = 390 * 3
 MIRROR_K = Decimal(400)
 
@@ -21,6 +23,13 @@ PROPERTY_SETTINGS = settings(
     max_examples=150,
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+
+REACHABILITY_SETTINGS = settings(
+    max_examples=400,
+    deadline=None,
+    database=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much],
 )
 
 
@@ -50,9 +59,8 @@ def long_signals(draw):
 
 
 @st.composite
-def bar_paths(draw):
-    start = draw(st.integers(0, len(MINUTES) - 1))
-    price = draw(st.integers(9700, 10400))
+def bar_paths(draw, start, zone_low_cents, force_index=None):
+    price = zone_low_cents + draw(st.integers(-250, 250))
     steps = draw(
         st.lists(
             st.tuples(
@@ -64,6 +72,8 @@ def bar_paths(draw):
         )
     )
     bars = []
+    forced_bar = None
+    last_index = start - 1
     for offset, (gap, move, up, down, keep) in enumerate(steps):
         index = start + offset
         if index >= len(MINUTES):
@@ -73,8 +83,27 @@ def bar_paths(draw):
         high = max(open_, close) + up
         low = min(open_, close) - down
         price = close
-        if keep:
-            bars.append(Bar(MINUTES[index], cents(open_), cents(high), cents(low), cents(close), Decimal(100)))
+        last_index = index
+        candidate = Bar(MINUTES[index], cents(open_), cents(high), cents(low), cents(close), Decimal(100))
+        if index == force_index:
+            # This bar must be present (not subject to the random "keep" drop) so the
+            # caller's requested boundary (e.g. the window's last expected minute) is
+            # actually reachable instead of merely likely.
+            forced_bar = candidate
+        elif keep:
+            bars.append(candidate)
+    if (
+        forced_bar is None
+        and force_index is not None
+        and force_index > last_index
+        and force_index < len(MINUTES)
+    ):
+        # steps ran out before reaching force_index: extend flat from the last price.
+        flat = cents(price)
+        forced_bar = Bar(MINUTES[force_index], flat, flat, flat, flat, Decimal(100))
+    if forced_bar is not None:
+        bars.append(forced_bar)
+        bars.sort(key=lambda b: b.ts)
     return bars
 
 
@@ -85,6 +114,28 @@ def scenarios(draw, zero_costs: bool = False):
         seconds=draw(st.integers(0, 59))
     )
     begin = evaluation_start_ts(CAL, created)
+    valid_until = signal_valid_until_ts(CAL, begin, signal.valid_sessions)
+    # Anchor the bar path to the order's own evaluation window instead of drawing a
+    # start index uniformly over the whole calendar: otherwise most generated paths
+    # never intersect [evaluation_start_ts, valid_until_ts) and step() silently drops
+    # every bar, so the property passes vacuously on an empty event list.
+    start_idx = MINUTE_INDEX[begin]
+    end_idx = MINUTE_INDEX[CAL.last_expected_minute_before(valid_until)]
+    if draw(st.sampled_from(["start", "end"])) == "start":
+        # Some bars precede the window (exercises the pre-window-is-ignored guard), and
+        # the window's first expected minute is forced present (see bar_paths) so a
+        # short/unlucky "keep" draw can't leave the whole path outside the window.
+        first_index = max(0, start_idx - draw(st.integers(0, 20)))
+        force_index = start_idx
+    else:
+        # The path is anchored so it reaches the window's last expected minute, and
+        # that exact bar is forced present (see bar_paths), so TIME_EXIT/EXPIRED
+        # (only fired on that bar) are actually reachable, not merely likely. Kept
+        # short so an open position plausibly survives to expiry without stopping
+        # or targeting out first.
+        first_index = max(0, end_idx - draw(st.integers(0, 40)))
+        force_index = end_idx
+    zone_low_cents = int(signal.entry_zone_low * 100)
     if zero_costs:
         config = FillConfig(stop_slippage_bps=Decimal(0))
     else:
@@ -93,8 +144,8 @@ def scenarios(draw, zero_costs: bool = False):
             stop_slippage_bps=Decimal(draw(st.integers(0, 10))),
             commission_per_execution=cents(draw(st.integers(0, 100))),
         )
-    ctx = OrderContext(signal, config, CAL, begin, signal_valid_until_ts(CAL, begin, signal.valid_sessions))
-    return ctx, draw(bar_paths())
+    ctx = OrderContext(signal, config, CAL, begin, valid_until)
+    return ctx, draw(bar_paths(first_index, zone_low_cents, force_index))
 
 
 def run(ctx, bars):
@@ -177,6 +228,8 @@ def _mirror_price(value):
 @PROPERTY_SETTINGS
 @given(scenarios(zero_costs=True))
 def test_short_mirror_matches_long(scenario):
+    # zero_costs=True is required: slippage is computed off abs(price), which is not
+    # translation-invariant under the K-price mirror, so mirroring is only exact cost-free.
     ctx, bars = scenario
     s = ctx.signal
     short_signal = SignalSpec(
@@ -204,3 +257,49 @@ def test_short_mirror_matches_long(scenario):
         assert short_event.qty == long_event.qty
     risk = ctx.config.risk_amount
     assert r_multiple(long_result.state, risk) == r_multiple(short_result.state, risk)
+
+
+REACHABLE_EVENT_TYPES = (
+    EventType.FILLED,
+    EventType.ZONE_LOST,
+    EventType.ZONE_RECLAIMED,
+    EventType.TRIGGER_HIT,
+    EventType.TARGET1_HIT,
+    EventType.TARGET2_HIT,
+    EventType.STOPPED,
+    EventType.TIME_EXIT,
+    EventType.EXPIRED,
+    EventType.INVALIDATED,
+)
+
+# TARGET2_HIT requires two sequential touches (target1 then target2) within one path,
+# which is rarer than the other single-touch behaviors, so it gets a larger search budget.
+HARDER_REACHABILITY_SETTINGS = settings(
+    max_examples=1200,
+    deadline=None,
+    database=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much],
+)
+EVENT_REACHABILITY_SETTINGS = {EventType.TARGET2_HIT: HARDER_REACHABILITY_SETTINGS}
+
+
+def _event_types(scenario) -> set:
+    ctx, bars = scenario
+    return {event.type for event in run(ctx, bars).events}
+
+
+def _find_scenario(predicate, description, search_settings=REACHABILITY_SETTINGS) -> None:
+    try:
+        find(scenarios(), predicate, settings=search_settings)
+    except NoSuchExample:
+        raise AssertionError(f"strategy never produces: {description}")
+
+
+def test_strategy_reaches_all_behaviors():
+    for event_type in REACHABLE_EVENT_TYPES:
+        search_settings = EVENT_REACHABILITY_SETTINGS.get(event_type, REACHABILITY_SETTINGS)
+        _find_scenario(lambda s, t=event_type: t in _event_types(s), event_type, search_settings)
+    _find_scenario(
+        lambda s: any(bar.ts < s[0].evaluation_start_ts for bar in s[1]),
+        "a bar before evaluation_start_ts",
+    )
