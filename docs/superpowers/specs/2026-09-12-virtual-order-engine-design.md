@@ -1,14 +1,14 @@
 # Motor de Ordens Virtuais + Registro de Sinais (Ações EUA) — Design
 
 - **Data:** 2026-09-12
-- **Revisão:** 4 — actionability de ordens manuais, hash de dados selecionados por run, definição formal do pregão 1
-- **Status:** aguardando confirmação final para congelamento como **SPEC v1.0 FROZEN**
+- **Revisão:** 5 — ordem manual somente enquanto a hipotética estiver `PENDING`; auditoria do estado herdado
+- **Status:** **SPEC v1.0 FROZEN** (tag git `spec/virtual-order-engine-v1.0`)
 - **Sub-projeto:** 01 da Research Platform
 
 ## 0. Regra de congelamento
 
-Após aprovação, esta spec é congelada como v1.0. A partir do primeiro resultado persistido, **qualquer
-mudança na semântica de fill, custo, elegibilidade ou qualidade de dados gera um novo
+Esta spec está congelada como v1.0. **Qualquer mudança na semântica de fill, zona, actionability,
+sequência intrabar, stop, target, custo, elegibilidade ou qualidade de dados gera um novo
 `fill_model_version`** (ex.: `v2`) implementado em módulo próprio. O `fill_model v1` nunca é
 alterado; correções de bug que mudem resultados também geram nova versão. O significado de
 "ganhou +1,3R" não pode mudar retroativamente.
@@ -83,7 +83,8 @@ REXSHARE, WIN/B3 e demais estratégias são **produtores de `Signal`** sobre a m
 
 Pipeline REXSHARE, estratégias WIN/B3, Portfolio Simulator, importação de fills reais,
 `BrokerExecutor`, day trade e avaliação por streaming, multi-cliente, Next.js,
-reconhecimento de padrões, simulação de borrow/locate para SHORT, normalização automática de splits.
+reconhecimento de padrões, simulação de borrow/locate para SHORT, normalização automática de splits,
+origem `MANUAL_LATE_ENTRY`.
 
 ## 2. Arquitetura
 
@@ -269,20 +270,30 @@ não pode ser "ressuscitada" com hindsight.
 - **Dados:** candles lidos as-of `T` (3.6). A verificação grava um `evaluation_runs` de tipo
   `ACTIONABILITY` com `data_as_of = T` e `selected_data_hash`; o `run_id` e o resultado ficam no
   payload de `ORDER_CREATED`.
-- **Não acionável** se a ordem hipotética atingiu qualquer estado final antes de `T`:
+- **Regra central:** **uma ordem `MANUAL_USER` só pode ser criada enquanto a ordem hipotética
+  equivalente ainda estaria `PENDING` em `T`.** Qualquer entrada hipotética anterior ao clique
+  significa que a seleção humana ocorreria com conhecimento do resultado.
 
-  | Estado hipotético | Resposta |
+  | Estado hipotético em `T` | Resposta |
   |---|---|
+  | `PENDING` e `T < valid_until_ts` | acionável: cria `MANUAL_USER` com estado herdado |
+  | `EXPIRED` (ou `T ≥ valid_until_ts`) | `422 SIGNAL_EXPIRED` |
   | `INVALIDATED` (stop sem posição ou `ZONE_LOST_POLICY=CANCEL`) | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=INVALIDATED`) |
+  | `FILLED` ocorreu antes de `T` (`OPEN` ou `PARTIAL`) | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=ENTRY_OPPORTUNITY_ALREADY_OCCURRED`) |
   | `CLOSED` por stop (inclusive breakeven) | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=STOPPED`) |
   | `CLOSED` por target final | `422 SIGNAL_NO_LONGER_ACTIONABLE` (`reason=TARGET_REACHED`) |
-  | `EXPIRED` / `TIME_EXIT` | `422 SIGNAL_EXPIRED` |
+  | `CLOSED` por `TIME_EXIT` | `422 SIGNAL_EXPIRED` |
 
-- **Estado herdado:** se acionável, a ordem manual começa `PENDING` com o **estado de
-  elegibilidade** da ordem hipotética em `T`: `zone_lost`, `entry_eligible_from` e `trigger_hit_at`.
-  Assim, um usuário que clica quando a zona está perdida precisa aguardar `ZONE_RECLAIMED` como a
-  estratégia aguardaria. Se a ordem hipotética estiver `OPEN`/`PARTIAL`, a manual herda apenas
-  `trigger_hit_at` (zona não perdida) e aguarda sua própria entrada.
+- **Estado herdado:** a ordem manual começa `PENDING` com o **estado de elegibilidade** exato da
+  ordem hipotética em `T`: `zone_lost`, `entry_eligible_from` e `trigger_hit_at`. Um usuário que
+  clica com a zona perdida aguarda `ZONE_RECLAIMED` como a estratégia aguardaria. Decisões anteriores
+  a `evaluation_start_ts` da ordem manual não são reprocessadas como novas.
+- **Auditoria:** o payload de `ORDER_CREATED` grava `inherited_signal_state`
+  (`{status, zone_lost, entry_eligible_from, trigger_hit_at}`), `inherited_signal_state_hash`
+  (SHA-256 canônico, 3.3), `actionability_run_id` e `actionability_data_as_of`.
+- **Entrada tardia** ("vi o sinal já em andamento e entrei atrasado") é um experimento legítimo, mas
+  **não** é `MANUAL_USER`; será uma origem própria (`MANUAL_LATE_ENTRY`) com métricas separadas, fora
+  do escopo da v1.
 - **Dados indisponíveis** para a verificação (falha da Alpaca, cobertura insuficiente) → `503
   ACTIONABILITY_UNVERIFIABLE`; a ordem não é criada.
 
@@ -572,7 +583,9 @@ Sobre ordens `CLOSED`, filtráveis por `replay`:
   - ordem manual criada às 14:00 sobre sinal das 08:00 → nenhum evento antes de 14:00; validade igual à do sinal;
   - sinal às 09:40, stop atingido sem posição às 10:20, ordem manual às 13:00 → `SIGNAL_NO_LONGER_ACTIONABLE` (`INVALIDATED`);
   - ordem hipotética estopada / com target final antes do clique → `STOPPED` / `TARGET_REACHED`;
+  - sinal 09:40, entrada hipotética 10:05, T1 11:00, clique 13:00 → `ENTRY_OPPORTUNITY_ALREADY_OCCURRED`;
   - ordem manual criada com zona perdida → herda `zone_lost` e só entra após `ZONE_RECLAIMED`;
+  - `ORDER_CREATED` de ordem manual contém `inherited_signal_state` e hash reprodutível;
   - `signal_actionability` é pura: mesmos candles e `T` → mesmo resultado, independente de existir ordem `AUTO_STRATEGY`;
   - `evaluation_start_ts` para 08:00, 10:30:00, 10:30:18, 15:59:30, 12:59:30 em meio pregão e véspera de feriado;
   - comissão cobrada em entrada, target 1 e stop (3 execuções);
