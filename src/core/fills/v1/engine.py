@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
@@ -114,6 +115,9 @@ def step(state: OrderState, bar: Bar, ctx: OrderContext) -> StepResult:
     else:
         work_state, events = _exit_phase(work_state, work_bar, signal, ctx, entry_bar=False)
     work_state = replace(work_state, last_bar_ts=bar.ts)
+    if not work_state.is_final and bar.ts == ctx.calendar.last_expected_minute_before(ctx.valid_until_ts):
+        work_state, end_events = _validity_end(work_state, work_bar, ctx)
+        events = events + end_events
 
     if not is_long:
         work_state = mirror_state(work_state)
@@ -339,3 +343,86 @@ def _close(
         final_event_ts=bar.ts,
     )
     return state, [event]
+
+
+def _validity_end(
+    state: OrderState, bar: Bar | None, ctx: OrderContext
+) -> tuple[OrderState, list[Event]]:
+    if state.status is OrderStatus.PENDING:
+        event = Event(EventType.EXPIRED, "EXPIRED", payload={"valid_until_ts": ctx.valid_until_ts})
+        return replace(state, status=OrderStatus.EXPIRED, final_event_ts=ctx.valid_until_ts), [event]
+    assert bar is not None
+    price = _adverse_sell(bar.close, ctx.config.stop_slippage_bps)
+    return _close(state, bar, ctx, EventType.TIME_EXIT, price, CloseReason.TIME_EXIT,
+                  {"raw_price": bar.close})
+
+
+def apply_validity_end(
+    state: OrderState, ctx: OrderContext, last_bar: Bar | None, now: datetime
+) -> StepResult:
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if now < ctx.valid_until_ts or state.is_final or state.frozen:
+        return StepResult(state)
+    if state.status is OrderStatus.PENDING:
+        new_state, events = _validity_end(state, None, ctx)
+        return StepResult(new_state, tuple(events))
+    if last_bar is None:
+        return flag_review(state, "NO_EXIT_BAR", ctx.valid_until_ts.isoformat())
+    if last_bar.ts != state.last_bar_ts:
+        raise ValueError("last_bar must be the latest processed bar")
+
+    is_long = ctx.signal.direction is Direction.LONG
+    work_state = state if is_long else mirror_state(state)
+    work_bar = last_bar if is_long else mirror_bar(last_bar)
+    work_state, events = _validity_end(work_state, work_bar, ctx)
+    if not is_long:
+        work_state = mirror_state(work_state)
+        events = [mirror_event(event) for event in events]
+    return StepResult(work_state, tuple(events))
+
+
+def flag_review(state: OrderState, reason: str, ref: str) -> StepResult:
+    event = Event(
+        EventType.NEEDS_REVIEW, f"NEEDS_REVIEW:{reason}:{ref}",
+        payload={"reason": reason, "ref": ref},
+    )
+    reasons = state.review_reasons if reason in state.review_reasons else state.review_reasons + (reason,)
+    return StepResult(replace(state, review_reasons=reasons), (event,))
+
+
+def cancel(state: OrderState, at: datetime, requested_by: str = "user") -> StepResult:
+    if at.tzinfo is None:
+        raise ValueError("at must be timezone-aware")
+    if state.is_final:
+        return StepResult(state)
+    event = Event(
+        EventType.CANCELED, "CANCELED",
+        payload={"at": at, "requested_by": requested_by, "open_qty": state.qty_open},
+    )
+    return StepResult(replace(state, status=OrderStatus.CANCELED, final_event_ts=at), (event,))
+
+
+def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
+    if state.is_final:
+        return StepResult(state)
+    frozen_event = Event(EventType.FROZEN, f"FROZEN:{reason}", payload={"reason": reason, "ref": ref})
+    review = flag_review(replace(state, frozen=True), reason, ref)
+    return StepResult(review.state, (frozen_event,) + review.events)
+
+
+def apply_dividend(
+    state: OrderState, ctx: OrderContext, ex_date: date, amount: Decimal, validated: bool
+) -> StepResult:
+    if state.is_final or state.frozen or state.qty_open <= ZERO:
+        return StepResult(state)
+    ref = ex_date.isoformat()
+    if not validated:
+        return flag_review(state, "DIVIDEND_UNVERIFIED", ref)
+    sign = Decimal(1) if ctx.signal.direction is Direction.LONG else Decimal(-1)
+    cash = sign * amount * state.qty_open
+    event = Event(
+        EventType.DIVIDEND, f"DIVIDEND:{ref}", qty=state.qty_open,
+        payload={"ex_date": ex_date, "amount_per_share": amount, "cash": cash},
+    )
+    return StepResult(replace(state, dividends=state.dividends + cash), (event,))
