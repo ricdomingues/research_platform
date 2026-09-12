@@ -124,3 +124,60 @@ def test_actionability_is_pure():
     first = signal_actionability(V1, ctx, bars, et(DAY, "12:00"))
     second = signal_actionability(V1, ctx, list(reversed(bars)), et(DAY, "12:00"))
     assert first == second
+
+
+def test_manual_order_flags_partial_bar_skipped_when_click_splits_a_candle():
+    ctx = signal_ctx()
+    bars = flat(ctx, "09:40", "10:40", 105)
+    manual = build_manual_order(V1, ctx, bars, et(DAY, "10:30", 18))
+    assert manual.context.evaluation_start_ts == et(DAY, "10:31")
+    (created,) = manual.created.events
+    assert created.payload["partial_bar_skipped"] is True
+    assert created.payload["skipped_bar_ts"] == et(DAY, "10:30")
+
+
+def test_manual_order_no_partial_bar_skipped_on_whole_minute_click():
+    ctx = signal_ctx()
+    bars = flat(ctx, "09:40", "10:40", 105)
+    manual = build_manual_order(V1, ctx, bars, et(DAY, "10:30"))
+    assert manual.context.evaluation_start_ts == et(DAY, "10:30")
+    (created,) = manual.created.events
+    assert created.payload["partial_bar_skipped"] is False
+    assert created.payload["skipped_bar_ts"] is None
+
+
+def test_manual_order_no_partial_bar_skipped_outside_expected_minutes():
+    ctx = make_ctx(long_signal(), start=et(DAY, "08:00"))
+    manual = build_manual_order(V1, ctx, [], et(DAY, "08:00", 30))
+    (created,) = manual.created.events
+    assert created.payload["partial_bar_skipped"] is False
+    assert created.payload["skipped_bar_ts"] is None
+
+
+def test_manual_order_rejects_extra_payload_colliding_with_audit_fields():
+    ctx = signal_ctx()
+    bars = flat(ctx, "09:40", "10:40", 105)
+    with pytest.raises(ValueError):
+        build_manual_order(
+            V1, ctx, bars, et(DAY, "10:30", 18), extra_payload={"partial_bar_skipped": True}
+        )
+
+
+def test_manual_order_ignores_stop_touching_partial_bar():
+    ctx = signal_ctx()
+    history = flat(ctx, "09:40", "10:29", 105)
+    stop_touch = bar(et(DAY, "10:30"), 100, 100.2, 96.5, 97)
+    click = et(DAY, "10:30", 18)
+    decision = signal_actionability(V1, ctx, history + [stop_touch], click)
+    assert decision.actionable
+
+    manual = build_manual_order(V1, ctx, history + [stop_touch], click)
+    assert manual.context.evaluation_start_ts == et(DAY, "10:31")
+    (created,) = manual.created.events
+    assert created.payload["partial_bar_skipped"] is True
+    assert created.payload["skipped_bar_ts"] == et(DAY, "10:30")
+
+    entry_bar = bar(et(DAY, "10:31"), 101, 101.5, 100.5, 101.2)
+    result = run_bars(manual.created.state, history + [stop_touch, entry_bar], manual.context)
+    assert all(event.bar_ts != et(DAY, "10:30") for event in result.events)
+    assert any(event.bar_ts == et(DAY, "10:31") for event in result.events)

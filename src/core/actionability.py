@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from types import ModuleType
 from typing import Any, Iterable, Mapping
 
-from core.domain.calendar import ONE_MINUTE, evaluation_start_ts
+from core.domain.calendar import ONE_MINUTE, SessionCalendar, evaluation_start_ts
 from core.domain.models import Bar, CloseReason, GatingState, OrderContext, OrderStatus, StepResult
 
 
@@ -90,6 +90,20 @@ class ManualOrder:
     actionability: Actionability
 
 
+_AUDIT_KEYS = frozenset({"partial_bar_skipped", "skipped_bar_ts"})
+
+
+def _partial_bar_audit(calendar: SessionCalendar, created_at: datetime) -> tuple[bool, datetime | None]:
+    """D1 audit fields: was the minute straddling `created_at` skipped? (spec section 10, D1)."""
+    created_utc = created_at.astimezone(timezone.utc)
+    if created_utc.second == 0 and created_utc.microsecond == 0:
+        return False, None
+    floored = created_utc.replace(second=0, microsecond=0)
+    if calendar.is_expected_minute(floored):
+        return True, floored
+    return False, None
+
+
 def build_manual_order(
     fill_model: ModuleType,
     signal_ctx: OrderContext,
@@ -110,7 +124,16 @@ def build_manual_order(
         evaluation_start_ts=start,
         valid_until_ts=signal_ctx.valid_until_ts,
     )
-    created = fill_model.new_order_state(
-        context, inherited=decision.gating_state, extra_payload=extra_payload
-    )
+    if extra_payload is not None and _AUDIT_KEYS & extra_payload.keys():
+        raise ValueError(
+            f"extra_payload cannot override D1 audit fields: {sorted(_AUDIT_KEYS & extra_payload.keys())}"
+        )
+    partial_bar_skipped, skipped_bar_ts = _partial_bar_audit(signal_ctx.calendar, created_at)
+    payload: dict[str, Any] = {
+        "partial_bar_skipped": partial_bar_skipped,
+        "skipped_bar_ts": skipped_bar_ts,
+    }
+    if extra_payload is not None:
+        payload.update(extra_payload)
+    created = fill_model.new_order_state(context, inherited=decision.gating_state, extra_payload=payload)
     return ManualOrder(context, created, decision)
