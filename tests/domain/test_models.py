@@ -131,3 +131,15 @@ def test_datetimes_are_normalized_to_utc():
     event = Event(EventType.FILLED, "FILLED", open_et)
     assert event.bar_ts.tzinfo is timezone.utc
     assert Bar(open_et, D(1), D(1), D(1), D(1)).ts.tzinfo is timezone.utc
+
+
+def test_position_metrics_ignore_ambient_decimal_context():
+    from decimal import Context, localcontext
+
+    state = OrderState(avg_entry=D(101), initial_stop=D("97.9"), best_price=D(103), realized_pnl=D(1))
+    expected_r = r_multiple(state, D(3))
+    expected_excursion = excursion_r(state, Direction.LONG)
+    assert expected_r == Decimal("0.3333333333333333333333333333")
+    with localcontext(Context(prec=12)):
+        assert r_multiple(state, D(3)) == expected_r
+        assert excursion_r(state, Direction.LONG) == expected_excursion

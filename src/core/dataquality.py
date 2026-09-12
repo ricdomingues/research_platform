@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Iterable, Mapping, Sequence
 
 from core.domain.calendar import ONE_MINUTE, SessionCalendar
+from core.domain.hashing import CANONICAL_CONTEXT
 from core.domain.models import Bar, Event, EventType, OrderContext, OrderState, SignalSpec
 
 HUNDRED = Decimal(100)
@@ -29,7 +30,8 @@ class SessionQuality:
     @property
     def coverage_pct(self) -> Decimal:
         present = self.expected - len(self.missing)
-        return (Decimal(present) * HUNDRED / Decimal(self.expected)).quantize(CENT)
+        with localcontext(CANONICAL_CONTEXT):
+            return (Decimal(present) * HUNDRED / Decimal(self.expected)).quantize(CENT)
 
     def event(self) -> Event:
         return Event(
@@ -142,11 +144,12 @@ def daily_range_mismatch(
         return False
     high = max(b.high for b in collected)
     low = min(b.low for b in collected)
-    tolerance = tolerance_pct / HUNDRED
-    return (
-        abs(high - reference_high) > reference_high * tolerance
-        or abs(low - reference_low) > reference_low * tolerance
-    )
+    with localcontext(CANONICAL_CONTEXT):
+        tolerance = tolerance_pct / HUNDRED
+        return (
+            abs(high - reference_high) > reference_high * tolerance
+            or abs(low - reference_low) > reference_low * tolerance
+        )
 
 
 def dividends_agree(first: Decimal | None, second: Decimal | None, tolerance: Decimal) -> bool:

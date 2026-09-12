@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID
+
+# Explicit context so hashes never depend on the caller's ambient decimal context.
+CANONICAL_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
 
 
 def _normalize(value: Any) -> Any:
@@ -23,7 +26,7 @@ def _normalize(value: Any) -> Any:
             raise ValueError(f"non-finite Decimal: {value}")
         if value == 0:
             return "0"
-        return format(value.normalize(), "f")
+        return format(value.normalize(CANONICAL_CONTEXT), "f")
     if isinstance(value, datetime):
         if value.tzinfo is None:
             raise ValueError("naive datetime is not allowed")

@@ -141,3 +141,29 @@ def test_dividends_credit_long_debit_short_and_require_validation():
                       bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101), short_ctx).state
     debited = apply_dividend(short_open, short_ctx, date(2025, 11, 26), D("0.24"), validated=True)
     assert debited.events[0].payload["cash"] == D(-6)
+
+
+def _fill_and_stop_run():
+    from core.domain.models import FillConfig
+
+    ctx = make_ctx(config=FillConfig(entry_slippage_bps=D(7)))
+    created = new_order_state(ctx)
+    bars = [
+        bar(et("2025-11-25", "09:30"), "101.37", "101.5", "100.5", "101.2"),
+        bar(et("2025-11-25", "09:31"), "98", "98.5", "96.5", "97"),
+    ]
+    result = run_bars(created.state, bars, ctx)
+    events = created.events + result.events
+    return events, [e.payload_hash for e in events], result.state
+
+
+def test_engine_ignores_ambient_decimal_context():
+    from decimal import Context, localcontext
+
+    events, hashes, state = _fill_and_stop_run()
+    assert types(events) == [EventType.ORDER_CREATED, EventType.FILLED, EventType.STOPPED]
+    with localcontext(Context(prec=12)):
+        low_events, low_hashes, low_state = _fill_and_stop_run()
+    assert low_events == events
+    assert low_hashes == hashes
+    assert low_state == state

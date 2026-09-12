@@ -79,3 +79,14 @@ def test_daily_range_mismatch_and_dividend_agreement():
     assert dividends_agree(D("0.24"), D("0.2405"), D("0.001"))
     assert not dividends_agree(D("0.24"), D("0.25"), D("0.001"))
     assert not dividends_agree(D("0.24"), None, D("0.001"))
+
+
+def test_coverage_pct_ignores_ambient_decimal_context():
+    from decimal import Context, localcontext
+
+    from core.dataquality import SessionQuality
+
+    quality = SessionQuality(date(2025, 11, 25), 3, (et("2025-11-25", "10:00"),))
+    assert quality.coverage_pct == D("66.67")
+    with localcontext(Context(prec=3)):
+        assert quality.coverage_pct == D("66.67")

@@ -1,11 +1,16 @@
-"""fill_model v1 (spec section 4). FROZEN: behavior changes require a new version module."""
+"""fill_model v1 (spec section 4). FROZEN: behavior changes require a new version module.
+
+Decimal arithmetic runs under V1_CONTEXT (prec=28, ROUND_HALF_EVEN), never the ambient
+context; this context is part of the frozen v1 semantics.
+"""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime
-from decimal import Decimal
-from typing import Any, Iterable, Mapping
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from functools import wraps
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from core.domain.hashing import sha256_hex
 from core.domain.models import (
@@ -28,6 +33,18 @@ from core.fills.v1.mirror import mirror_bar, mirror_event, mirror_signal, mirror
 
 VERSION = "v1"
 BPS = Decimal("10000")
+V1_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _in_v1_context(func: _F) -> _F:
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with localcontext(V1_CONTEXT):
+            return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _adverse_buy(price: Decimal, bps: Decimal) -> Decimal:
@@ -58,6 +75,7 @@ def _execution_cost(ctx: OrderContext, price: Decimal, qty: Decimal, leg: str) -
     return cost
 
 
+@_in_v1_context
 def new_order_state(
     ctx: OrderContext,
     inherited: GatingState | None = None,
@@ -95,6 +113,7 @@ def new_order_state(
     return StepResult(state, (Event(EventType.ORDER_CREATED, "ORDER_CREATED", payload=payload),))
 
 
+@_in_v1_context
 def step(state: OrderState, bar: Bar, ctx: OrderContext) -> StepResult:
     if state.is_final or state.frozen:
         return StepResult(state)
@@ -125,6 +144,7 @@ def step(state: OrderState, bar: Bar, ctx: OrderContext) -> StepResult:
     return StepResult(work_state, tuple(events))
 
 
+@_in_v1_context
 def run_bars(state: OrderState, bars: Iterable[Bar], ctx: OrderContext) -> StepResult:
     events: list[Event] = []
     for current in sorted(bars, key=lambda b: b.ts):
@@ -357,6 +377,7 @@ def _validity_end(
                   {"raw_price": bar.close})
 
 
+@_in_v1_context
 def apply_validity_end(
     state: OrderState, ctx: OrderContext, last_bar: Bar | None, now: datetime
 ) -> StepResult:
@@ -382,6 +403,7 @@ def apply_validity_end(
     return StepResult(work_state, tuple(events))
 
 
+@_in_v1_context
 def flag_review(state: OrderState, reason: str, ref: str) -> StepResult:
     event = Event(
         EventType.NEEDS_REVIEW, f"NEEDS_REVIEW:{reason}:{ref}",
@@ -391,6 +413,7 @@ def flag_review(state: OrderState, reason: str, ref: str) -> StepResult:
     return StepResult(replace(state, review_reasons=reasons), (event,))
 
 
+@_in_v1_context
 def cancel(state: OrderState, at: datetime, requested_by: str = "user") -> StepResult:
     if at.tzinfo is None:
         raise ValueError("at must be timezone-aware")
@@ -403,6 +426,7 @@ def cancel(state: OrderState, at: datetime, requested_by: str = "user") -> StepR
     return StepResult(replace(state, status=OrderStatus.CANCELED, final_event_ts=at), (event,))
 
 
+@_in_v1_context
 def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
     if state.is_final:
         return StepResult(state)
@@ -413,6 +437,7 @@ def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
     return StepResult(review.state, (frozen_event,) + review.events)
 
 
+@_in_v1_context
 def apply_dividend(
     state: OrderState, ctx: OrderContext, ex_date: date, amount: Decimal, validated: bool
 ) -> StepResult:

@@ -51,3 +51,13 @@ def test_supported_types_and_digest_shape():
     digest = sha256_hex(value)
     assert len(digest) == 64
     int(digest, 16)
+
+
+def test_canonical_json_ignores_ambient_decimal_context():
+    from decimal import Context, localcontext
+
+    value = {"p": Decimal("1.234567890123456789012345")}
+    expected = '{"p":"1.234567890123456789012345"}'
+    assert canonical_json(value) == expected
+    with localcontext(Context(prec=12)):
+        assert canonical_json(value) == expected
