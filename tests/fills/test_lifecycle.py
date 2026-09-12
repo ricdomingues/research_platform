@@ -144,6 +144,18 @@ def test_dividends_credit_long_debit_short_and_require_validation():
     assert debited.events[0].payload["cash"] == D(-6)
 
 
+def test_dividend_amount_must_be_decimal_or_int():
+    ctx = make_ctx()
+    opened = step(new_order_state(ctx).state, ENTRY, ctx).state
+    as_int = apply_dividend(opened, ctx, date(2025, 11, 26), 1, validated=True)
+    as_dec = apply_dividend(opened, ctx, date(2025, 11, 26), D(1), validated=True)
+    assert as_int.events == as_dec.events
+    assert as_int.events[0].payload_hash == as_dec.events[0].payload_hash
+    for bad in (0.24, True):
+        with pytest.raises(TypeError, match="amount"):
+            apply_dividend(opened, ctx, date(2025, 11, 26), bad, validated=True)
+
+
 def _fill_and_stop_run():
     from core.domain.models import FillConfig
 

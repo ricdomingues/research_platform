@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -91,6 +91,31 @@ class ZoneLostPolicy(StrEnum):
     CANCEL = "CANCEL"
 
 
+def coerce_decimal(value: Any, name: str, optional: bool = False) -> Decimal | None:
+    """Money/ratio inputs: Decimal kept, int converted, finite-Decimal str parsed; float/bool rejected."""
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or isinstance(value, float):
+        raise TypeError(f"{name} must be Decimal, int or str, not {type(value).__name__}")
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except InvalidOperation:
+            raise ValueError(f"{name} is not a valid decimal string: {value!r}") from None
+    if not isinstance(value, Decimal):
+        raise TypeError(f"{name} must be Decimal, int or str, not {type(value).__name__}")
+    if not value.is_finite():
+        raise ValueError(f"{name} must be finite, got {value}")
+    return value
+
+
+def _require_int(value: Any, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be int, not {type(value).__name__}")
+
+
 def _require_aware(value: datetime | None, name: str) -> None:
     if value is not None and value.tzinfo is None:
         raise ValueError(f"{name} must be timezone-aware")
@@ -141,6 +166,11 @@ class SignalSpec:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", Direction(self.direction))
+        for name in ("entry_zone_low", "entry_zone_high", "stop", "target1"):
+            object.__setattr__(self, name, coerce_decimal(getattr(self, name), name))
+        for name in ("target2", "trigger_price"):
+            object.__setattr__(self, name, coerce_decimal(getattr(self, name), name, optional=True))
+        _require_int(self.valid_sessions, "valid_sessions")
 
     def as_payload(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -162,8 +192,19 @@ class FillConfig:
     crosscheck_tolerance_pct: Decimal = Decimal("0.5")
     dividend_tolerance: Decimal = Decimal("0.001")
 
+    _DECIMAL_FIELDS = (
+        "risk_amount", "entry_slippage_bps", "stop_slippage_bps", "commission_per_execution",
+        "sec_fee_rate", "taf_fee_per_share", "taf_fee_max", "target1_scale_out_pct",
+        "crosscheck_tolerance_pct", "dividend_tolerance",
+    )
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "zone_lost_policy", ZoneLostPolicy(self.zone_lost_policy))
+        for name in self._DECIMAL_FIELDS:
+            object.__setattr__(self, name, coerce_decimal(getattr(self, name), name))
+        _require_int(self.data_gap_minutes, "data_gap_minutes")
+        if not isinstance(self.sec_taf_fees_enabled, bool):
+            raise TypeError(f"sec_taf_fees_enabled must be bool, not {type(self.sec_taf_fees_enabled).__name__}")
         if self.risk_amount <= ZERO:
             raise ValueError("risk_amount must be positive")
         if not ZERO < self.target1_scale_out_pct < Decimal("100"):

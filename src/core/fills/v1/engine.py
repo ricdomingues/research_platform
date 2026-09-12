@@ -28,6 +28,7 @@ from core.domain.models import (
     SignalSpec,
     StepResult,
     ZoneLostPolicy,
+    coerce_decimal,
 )
 from core.fills.v1.mirror import mirror_bar, mirror_event, mirror_signal, mirror_state
 
@@ -444,6 +445,7 @@ def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
 def apply_dividend(
     state: OrderState, ctx: OrderContext, ex_date: date, amount: Decimal, validated: bool
 ) -> StepResult:
+    amount = coerce_decimal(amount, "amount")
     if state.is_final or state.frozen or state.qty_open <= ZERO:
         return StepResult(state)
     ref = ex_date.isoformat()
