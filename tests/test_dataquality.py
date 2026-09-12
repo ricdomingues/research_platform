@@ -81,6 +81,29 @@ def test_daily_range_mismatch_and_dividend_agreement():
     assert not dividends_agree(D("0.24"), None, D("0.001"))
 
 
+def test_dividends_agree_ignores_ambient_decimal_context():
+    from decimal import Context, localcontext
+
+    # |1.0015 - 0| = 1.0015 > 1.001, but prec=3 would round it to 1.00 and agree.
+    assert not dividends_agree(D("1.0015"), D("0"), D("1.001"))
+    with localcontext(Context(prec=3)):
+        assert not dividends_agree(D("1.0015"), D("0"), D("1.001"))
+
+
+def test_session_quality_raises_runtime_error_when_calendar_is_inconsistent():
+    import pytest
+
+    from core.domain.calendar import SessionCalendar
+
+    class Broken(SessionCalendar):
+        def session_containing(self, ts):
+            return None
+
+    broken = Broken(CAL.sessions)
+    with pytest.raises(RuntimeError, match="no session contains expected minute"):
+        session_quality(broken, et("2025-11-25", "10:00"), et("2025-11-25", "10:02"), [])
+
+
 def test_coverage_pct_ignores_ambient_decimal_context():
     from decimal import Context, localcontext
 

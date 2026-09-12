@@ -65,7 +65,8 @@ def session_quality(
     missing: dict[date, list[datetime]] = {}
     for minute in calendar.expected_minutes(start, end):
         session = calendar.session_containing(minute)
-        assert session is not None
+        if session is None:
+            raise RuntimeError(f"calendar inconsistency: no session contains expected minute {minute.isoformat()}")
         expected[session.day] = expected.get(session.day, 0) + 1
         bucket = missing.setdefault(session.day, [])
         if minute not in present_set:
@@ -153,4 +154,7 @@ def daily_range_mismatch(
 
 
 def dividends_agree(first: Decimal | None, second: Decimal | None, tolerance: Decimal) -> bool:
-    return first is not None and second is not None and abs(first - second) <= tolerance
+    if first is None or second is None:
+        return False
+    with localcontext(CANONICAL_CONTEXT):
+        return abs(first - second) <= tolerance

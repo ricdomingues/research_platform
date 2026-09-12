@@ -279,11 +279,14 @@ def _exit_phase(
     stop_level = state.stop_current
     if state.stop_active_from is not None and bar.ts < state.stop_active_from:
         stop_level = state.stop_previous
-    best = state.best_price if entry_bar else _max(state.best_price, bar.high)
+    stop_triggered = bar.low <= stop_level
+    # Ambiguous candle -> worst case (spec 4): the high of a candle that triggers the stop
+    # (entry candle included) never improves MFE; its low still counts toward MAE.
+    best = state.best_price if entry_bar or stop_triggered else _max(state.best_price, bar.high)
     state = replace(state, best_price=best, worst_price=_min(state.worst_price, bar.low))
 
     # Stop first (spec 4.4)
-    if bar.low <= stop_level:
+    if stop_triggered:
         raw_price = min(bar.open, stop_level)
         price = _adverse_sell(raw_price, config.stop_slippage_bps)
         return _close(
@@ -438,10 +441,11 @@ def cancel(state: OrderState, at: datetime, requested_by: str = "user") -> StepR
 def freeze(state: OrderState, reason: str, ref: str) -> StepResult:
     if state.is_final:
         return StepResult(state)
-    if state.frozen and reason in state.review_reasons:
+    if state.frozen and reason in state.frozen_reasons:
         return StepResult(state)
     frozen_event = Event(EventType.FROZEN, f"FROZEN:{reason}", payload={"reason": reason, "ref": ref})
-    review = flag_review(replace(state, frozen=True), reason, ref)
+    frozen_state = replace(state, frozen=True, frozen_reasons=state.frozen_reasons + (reason,))
+    review = flag_review(frozen_state, reason, ref)
     return StepResult(review.state, (frozen_event,) + review.events)
 
 

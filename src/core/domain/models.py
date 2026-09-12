@@ -293,6 +293,7 @@ class OrderState:
     last_bar_ts: datetime | None = None
     close_reason: CloseReason | None = None
     frozen: bool = False
+    frozen_reasons: tuple[str, ...] = ()
     review_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:

@@ -131,6 +131,39 @@ def test_excursions_ignore_entry_candle_high():
     assert excursion_r(second.state, Direction.LONG) == (D("0.75"), D("-0.375"))
 
 
+def test_stop_candle_high_does_not_improve_mfe_long():
+    ctx = make_ctx()
+    first = opened(ctx)
+    assert first.state.best_price == D(101)
+    stopped = step(first.state, bar(et("2025-11-25", "09:31"), 100, 106.5, 96, 99), ctx)
+    assert types(stopped.events) == [EventType.STOPPED]
+    assert stopped.state.best_price == D(101)
+    assert stopped.state.worst_price == D(96)
+    entry_stop = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 104, 96.5, 97.5))
+    assert types(entry_stop.events) == [EventType.FILLED, EventType.STOPPED]
+    assert entry_stop.state.best_price == D(101) and entry_stop.state.worst_price == D("96.5")
+    # Ordinary and target candles still update MFE with their high.
+    ordinary = step(first.state, bar(et("2025-11-25", "09:31"), 101.2, 104, 99.5, 103), ctx)
+    assert ordinary.state.best_price == D(104)
+    target = step(first.state, bar(et("2025-11-25", "09:31"), 105, 106.4, 104.8, 105.5), ctx)
+    assert types(target.events) == [EventType.TARGET1_HIT] and target.state.best_price == D("106.4")
+
+
+def test_stop_candle_low_does_not_improve_mfe_short():
+    ctx = make_ctx(long_signal(direction=Direction.SHORT, stop=D(105), target1=D(96), target2=D(92)))
+    first = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101))
+    stopped = step(first.state, bar(et("2025-11-25", "09:31"), 102, 106, 95.5, 103), ctx)
+    assert types(stopped.events) == [EventType.STOPPED]
+    assert stopped.state.best_price == D(101)
+    assert stopped.state.worst_price == D(106)
+    assert excursion_r(stopped.state, Direction.SHORT) == (D(0), D("-1.25"))
+    entry_stop = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 105.5, 98, 104))
+    assert types(entry_stop.events) == [EventType.FILLED, EventType.STOPPED]
+    assert entry_stop.state.best_price == D(101) and entry_stop.state.worst_price == D("105.5")
+    ordinary = step(first.state, bar(et("2025-11-25", "09:31"), 100.5, 101, 98, 99), ctx)
+    assert ordinary.state.best_price == D(98)
+
+
 def test_short_exits_are_mirrored():
     ctx = make_ctx(long_signal(direction=Direction.SHORT, stop=D(105), target1=D(96), target2=D(92)))
     first = opened(ctx, bar(et("2025-11-25", "09:30"), 101, 101.5, 100.5, 101))

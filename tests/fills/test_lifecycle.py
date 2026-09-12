@@ -115,6 +115,19 @@ def test_freeze_with_new_reason_on_frozen_order_still_flags():
     assert second.state.review_reasons == ("SPLIT", "INTEGRITY")
 
 
+def test_freeze_idempotence_tracks_frozen_reasons_not_review_reasons():
+    ctx = make_ctx()
+    reviewed = flag_review(new_order_state(ctx).state, "INTEGRITY", "evt-0")
+    split = freeze(reviewed.state, "SPLIT", "2025-11-26")
+    assert split.state.frozen_reasons == ("SPLIT",)
+    integrity = freeze(split.state, "INTEGRITY", "evt-1")
+    assert [e.event_key for e in integrity.events] == ["FROZEN:INTEGRITY", "NEEDS_REVIEW:INTEGRITY:evt-1"]
+    assert integrity.state.frozen_reasons == ("SPLIT", "INTEGRITY")
+    assert integrity.state.review_reasons == ("INTEGRITY", "SPLIT")
+    again = freeze(integrity.state, "INTEGRITY", "evt-2")
+    assert again.events == () and again.state is integrity.state
+
+
 def test_flag_review_does_not_duplicate_reason():
     state = new_order_state(make_ctx()).state
     once = flag_review(state, "DAILY_RANGE_MISMATCH", "2025-11-25")
