@@ -29,6 +29,7 @@ REACHABILITY_SETTINGS = settings(
     max_examples=400,
     deadline=None,
     database=None,
+    derandomize=True,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much],
 )
 
@@ -284,6 +285,7 @@ HARDER_REACHABILITY_SETTINGS = settings(
     max_examples=1200,
     deadline=None,
     database=None,
+    derandomize=True,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much],
 )
 EVENT_REACHABILITY_SETTINGS = {EventType.TARGET2_HIT: HARDER_REACHABILITY_SETTINGS}
