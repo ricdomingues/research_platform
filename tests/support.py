@@ -52,3 +52,21 @@ def long_signal(**overrides) -> SignalSpec:
     )
     values.update(overrides)
     return SignalSpec(**values)
+
+
+from core.domain.calendar import evaluation_start_ts, signal_valid_until_ts
+from core.domain.models import FillConfig, OrderContext
+
+
+def make_ctx(signal: SignalSpec | None = None, config: FillConfig | None = None,
+             start: datetime | None = None, calendar: SessionCalendar | None = None) -> OrderContext:
+    calendar = calendar or make_calendar()
+    signal = signal or long_signal()
+    begin = evaluation_start_ts(calendar, start or et("2025-11-25", "09:30"))
+    return OrderContext(
+        signal=signal,
+        config=config or FillConfig(),
+        calendar=calendar,
+        evaluation_start_ts=begin,
+        valid_until_ts=signal_valid_until_ts(calendar, begin, signal.valid_sessions),
+    )

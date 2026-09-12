@@ -1,0 +1,249 @@
+"""fill_model v1 (spec section 4). FROZEN: behavior changes require a new version module."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from decimal import Decimal
+from typing import Any, Iterable, Mapping
+
+from core.domain.hashing import sha256_hex
+from core.domain.models import (
+    Bar,
+    Direction,
+    EntryPath,
+    Event,
+    EventType,
+    GatingState,
+    OrderContext,
+    OrderState,
+    OrderStatus,
+    SignalSpec,
+    StepResult,
+    ZoneLostPolicy,
+)
+from core.fills.v1.mirror import mirror_bar, mirror_event, mirror_signal, mirror_state
+
+VERSION = "v1"
+BPS = Decimal("10000")
+
+
+def _adverse_buy(price: Decimal, bps: Decimal) -> Decimal:
+    return price + abs(price) * bps / BPS
+
+
+def _adverse_sell(price: Decimal, bps: Decimal) -> Decimal:
+    return price - abs(price) * bps / BPS
+
+
+def _min(current: Decimal | None, value: Decimal) -> Decimal:
+    return value if current is None else min(current, value)
+
+
+def _max(current: Decimal | None, value: Decimal) -> Decimal:
+    return value if current is None else max(current, value)
+
+
+def _execution_cost(ctx: OrderContext, price: Decimal, qty: Decimal, leg: str) -> Decimal:
+    config = ctx.config
+    cost = config.commission_per_execution
+    if config.sec_taf_fees_enabled:
+        is_long = ctx.signal.direction is Direction.LONG
+        is_sell = (leg == "exit") if is_long else (leg == "entry")
+        if is_sell:
+            cost += abs(price) * qty * config.sec_fee_rate
+            cost += min(qty * config.taf_fee_per_share, config.taf_fee_max)
+    return cost
+
+
+def new_order_state(
+    ctx: OrderContext,
+    inherited: GatingState | None = None,
+    extra_payload: Mapping[str, Any] | None = None,
+) -> StepResult:
+    state = OrderState(initial_stop=ctx.signal.stop, stop_current=ctx.signal.stop)
+    inherited_payload = None
+    inherited_hash = None
+    if inherited is not None:
+        if inherited.status is not OrderStatus.PENDING:
+            raise ValueError("inherited signal state must be PENDING")
+        state = replace(
+            state,
+            zone_lost=inherited.zone_lost,
+            zone_ever_lost=inherited.zone_lost,
+            entry_eligible_from=inherited.entry_eligible_from,
+            trigger_hit_at=inherited.trigger_hit_at,
+        )
+        inherited_payload = inherited.as_payload()
+        inherited_hash = sha256_hex(inherited_payload)
+    payload: dict[str, Any] = {
+        "fill_model_version": VERSION,
+        "signal": ctx.signal.as_payload(),
+        "config": ctx.config.snapshot(),
+        "evaluation_start_ts": ctx.evaluation_start_ts,
+        "valid_until_ts": ctx.valid_until_ts,
+        "inherited_signal_state": inherited_payload,
+        "inherited_signal_state_hash": inherited_hash,
+    }
+    if extra_payload:
+        overlap = set(extra_payload) & set(payload)
+        if overlap:
+            raise ValueError(f"extra_payload overrides reserved keys: {sorted(overlap)}")
+        payload.update(extra_payload)
+    return StepResult(state, (Event(EventType.ORDER_CREATED, "ORDER_CREATED", payload=payload),))
+
+
+def step(state: OrderState, bar: Bar, ctx: OrderContext) -> StepResult:
+    if state.is_final or state.frozen:
+        return StepResult(state)
+    if bar.ts < ctx.evaluation_start_ts or bar.ts >= ctx.valid_until_ts:
+        return StepResult(state)
+    if state.last_bar_ts is not None and bar.ts <= state.last_bar_ts:
+        return StepResult(state)
+    if not ctx.calendar.is_expected_minute(bar.ts):
+        return StepResult(state)
+
+    is_long = ctx.signal.direction is Direction.LONG
+    signal = ctx.signal if is_long else mirror_signal(ctx.signal)
+    work_bar = bar if is_long else mirror_bar(bar)
+    work_state = state if is_long else mirror_state(state)
+
+    if work_state.status is OrderStatus.PENDING:
+        work_state, events = _entry_phase(work_state, work_bar, signal, ctx)
+    else:
+        work_state, events = _exit_phase(work_state, work_bar, signal, ctx, entry_bar=False)
+    work_state = replace(work_state, last_bar_ts=bar.ts)
+
+    if not is_long:
+        work_state = mirror_state(work_state)
+        events = [mirror_event(event) for event in events]
+    return StepResult(work_state, tuple(events))
+
+
+def run_bars(state: OrderState, bars: Iterable[Bar], ctx: OrderContext) -> StepResult:
+    events: list[Event] = []
+    for current in sorted(bars, key=lambda b: b.ts):
+        result = step(state, current, ctx)
+        state = result.state
+        events.extend(result.events)
+    return StepResult(state, tuple(events))
+
+
+def _eligible(state: OrderState, bar: Bar, signal: SignalSpec, ctx: OrderContext) -> bool:
+    if state.zone_lost:
+        return False
+    if state.entry_eligible_from is not None and bar.ts < state.entry_eligible_from:
+        return False
+    if signal.trigger_price is not None:
+        if state.trigger_hit_at is None:
+            return False
+        if bar.ts < ctx.calendar.next_expected_minute(state.trigger_hit_at):
+            return False
+    return True
+
+
+def _invalidate(state: OrderState, bar: Bar, reason: str) -> tuple[OrderState, list[Event]]:
+    event = Event(
+        EventType.INVALIDATED, "INVALIDATED", bar.ts,
+        bar_batch_id=bar.batch_id, payload={"reason": reason},
+    )
+    return replace(state, status=OrderStatus.INVALIDATED, final_event_ts=bar.ts), [event]
+
+
+def _entry_phase(
+    state: OrderState, bar: Bar, signal: SignalSpec, ctx: OrderContext
+) -> tuple[OrderState, list[Event]]:
+    # Rule 1
+    if bar.open <= signal.stop:
+        return _invalidate(state, bar, "OPEN_AT_OR_THROUGH_STOP")
+
+    # Rules 2 and 3
+    if _eligible(state, bar, signal, ctx):
+        raw_price: Decimal | None = None
+        rule = ""
+        if signal.entry_zone_low <= bar.open <= signal.entry_zone_high:
+            raw_price, rule = bar.open, "ZONE_OPEN"
+        elif bar.open > signal.entry_zone_high and bar.low < signal.entry_zone_high:
+            raw_price, rule = signal.entry_zone_high, "ZONE_CROSS"
+        if raw_price is not None:
+            state, fill_events = _fill(state, bar, signal, ctx, raw_price, rule)
+            state, exit_events = _exit_phase(state, bar, signal, ctx, entry_bar=True)
+            return state, fill_events + exit_events
+
+    # Rule 4
+    if bar.low <= signal.stop:
+        return _invalidate(state, bar, "STOP_TOUCHED_WITHOUT_POSITION")
+
+    events: list[Event] = []
+    # Rule 5: support lost only by open or close below the zone
+    if not state.zone_lost and (bar.open < signal.entry_zone_low or bar.close < signal.entry_zone_low):
+        events.append(
+            Event(
+                EventType.ZONE_LOST, f"ZONE_LOST:{bar.ts.isoformat()}", bar.ts,
+                bar_batch_id=bar.batch_id,
+                payload={"zone_boundary_level": signal.entry_zone_low},
+            )
+        )
+        state = replace(state, zone_lost=True, zone_ever_lost=True)
+        if ctx.config.zone_lost_policy is ZoneLostPolicy.CANCEL:
+            state, invalidated = _invalidate(state, bar, "ZONE_LOST_CANCEL")
+            return state, events + invalidated
+
+    # Rule 6
+    if state.zone_lost and bar.close >= signal.entry_zone_low:
+        eligible_from = ctx.calendar.next_expected_minute(bar.ts)
+        events.append(
+            Event(
+                EventType.ZONE_RECLAIMED, f"ZONE_RECLAIMED:{bar.ts.isoformat()}", bar.ts,
+                bar_batch_id=bar.batch_id,
+                payload={"entry_eligible_from": eligible_from},
+            )
+        )
+        state = replace(state, zone_lost=False, entry_eligible_from=eligible_from)
+
+    # Trigger: effective from the next expected minute (spec 4.2)
+    if (
+        signal.trigger_price is not None
+        and state.trigger_hit_at is None
+        and bar.high >= signal.trigger_price
+    ):
+        events.append(
+            Event(EventType.TRIGGER_HIT, "TRIGGER_HIT", bar.ts, price=signal.trigger_price,
+                  bar_batch_id=bar.batch_id)
+        )
+        state = replace(state, trigger_hit_at=bar.ts)
+    return state, events
+
+
+def _fill(
+    state: OrderState, bar: Bar, signal: SignalSpec, ctx: OrderContext, raw_price: Decimal, rule: str
+) -> tuple[OrderState, list[Event]]:
+    price = _adverse_buy(raw_price, ctx.config.entry_slippage_bps)
+    qty = ctx.config.risk_amount / (price - signal.stop)
+    cost = _execution_cost(ctx, price, qty, "entry")
+    path = EntryPath.RECLAIMED if state.zone_ever_lost else EntryPath.DIRECT
+    event = Event(
+        EventType.FILLED, "FILLED", bar.ts, price=price, qty=qty, bar_batch_id=bar.batch_id,
+        payload={"rule": rule, "entry_path": path, "raw_price": raw_price, "cost": cost},
+    )
+    state = replace(
+        state,
+        status=OrderStatus.OPEN,
+        avg_entry=price,
+        initial_stop=signal.stop,
+        stop_current=signal.stop,
+        qty_total=qty,
+        qty_open=qty,
+        costs=state.costs + cost,
+        entry_path=path,
+        opened_at=bar.ts,
+        best_price=price,
+    )
+    return state, [event]
+
+
+def _exit_phase(
+    state: OrderState, bar: Bar, signal: SignalSpec, ctx: OrderContext, entry_bar: bool
+) -> tuple[OrderState, list[Event]]:
+    # Task 5 version: excursion tracking only. Task 6 replaces this function with stops and targets.
+    best = state.best_price if entry_bar else _max(state.best_price, bar.high)
+    return replace(state, best_price=best, worst_price=_min(state.worst_price, bar.low)), []
