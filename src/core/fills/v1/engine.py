@@ -8,7 +8,9 @@ from typing import Any, Iterable, Mapping
 
 from core.domain.hashing import sha256_hex
 from core.domain.models import (
+    ZERO,
     Bar,
+    CloseReason,
     Direction,
     EntryPath,
     Event,
@@ -244,6 +246,96 @@ def _fill(
 def _exit_phase(
     state: OrderState, bar: Bar, signal: SignalSpec, ctx: OrderContext, entry_bar: bool
 ) -> tuple[OrderState, list[Event]]:
-    # Task 5 version: excursion tracking only. Task 6 replaces this function with stops and targets.
+    config = ctx.config
+    stop_level = state.stop_current
+    if state.stop_active_from is not None and bar.ts < state.stop_active_from:
+        stop_level = state.stop_previous
     best = state.best_price if entry_bar else _max(state.best_price, bar.high)
-    return replace(state, best_price=best, worst_price=_min(state.worst_price, bar.low)), []
+    state = replace(state, best_price=best, worst_price=_min(state.worst_price, bar.low))
+
+    # Stop first (spec 4.4)
+    if bar.low <= stop_level:
+        raw_price = min(bar.open, stop_level)
+        price = _adverse_sell(raw_price, config.stop_slippage_bps)
+        return _close(
+            state, bar, ctx, EventType.STOPPED, price, CloseReason.STOPPED,
+            {
+                "stop_kind": "BREAKEVEN" if state.t1_done else "INITIAL",
+                "stop_level": stop_level,
+                "raw_price": raw_price,
+            },
+        )
+    if entry_bar:
+        return state, []
+
+    events: list[Event] = []
+    if not state.t1_done and bar.high >= signal.target1:
+        if signal.target2 is None:
+            return _close(
+                state, bar, ctx, EventType.TARGET1_HIT, signal.target1,
+                CloseReason.TARGET_FINAL, {"final": True},
+            )
+        qty = state.qty_total * config.target1_scale_out_pct / Decimal(100)
+        pnl = (signal.target1 - state.avg_entry) * qty
+        cost = _execution_cost(ctx, signal.target1, qty, "exit")
+        active_from = ctx.calendar.next_expected_minute(bar.ts)
+        events.append(
+            Event(
+                EventType.TARGET1_HIT, "TARGET1_HIT", bar.ts, price=signal.target1, qty=qty,
+                bar_batch_id=bar.batch_id,
+                payload={
+                    "final": False,
+                    "pnl": pnl,
+                    "cost": cost,
+                    "new_stop_level": state.avg_entry,
+                    "stop_active_from": active_from,
+                },
+            )
+        )
+        state = replace(
+            state,
+            status=OrderStatus.PARTIAL,
+            t1_done=True,
+            qty_open=state.qty_open - qty,
+            realized_pnl=state.realized_pnl + pnl,
+            costs=state.costs + cost,
+            stop_previous=state.stop_current,
+            stop_current=state.avg_entry,
+            stop_active_from=active_from,
+        )
+    if state.t1_done and signal.target2 is not None and bar.high >= signal.target2:
+        state, closing = _close(
+            state, bar, ctx, EventType.TARGET2_HIT, signal.target2,
+            CloseReason.TARGET_FINAL, {"final": True},
+        )
+        events.extend(closing)
+    return state, events
+
+
+def _close(
+    state: OrderState,
+    bar: Bar,
+    ctx: OrderContext,
+    event_type: EventType,
+    price: Decimal,
+    reason: CloseReason,
+    extra: dict[str, Any],
+) -> tuple[OrderState, list[Event]]:
+    qty = state.qty_open
+    pnl = (price - state.avg_entry) * qty
+    cost = _execution_cost(ctx, price, qty, "exit")
+    event = Event(
+        event_type, event_type.value, bar.ts, price=price, qty=qty, bar_batch_id=bar.batch_id,
+        payload={**extra, "pnl": pnl, "cost": cost},
+    )
+    state = replace(
+        state,
+        status=OrderStatus.CLOSED,
+        qty_open=ZERO,
+        realized_pnl=state.realized_pnl + pnl,
+        costs=state.costs + cost,
+        close_reason=reason,
+        closed_at=bar.ts,
+        final_event_ts=bar.ts,
+    )
+    return state, [event]
