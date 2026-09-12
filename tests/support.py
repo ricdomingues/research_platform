@@ -19,3 +19,36 @@ def make_calendar() -> SessionCalendar:
     sessions = [Session(date.fromisoformat(d), et(d, "09:30"), et(d, "16:00")) for d in FULL_DAYS]
     sessions += [Session(date.fromisoformat(d), et(d, "09:30"), et(d, "13:00")) for d in HALF_DAYS]
     return SessionCalendar(sessions)
+
+
+from decimal import Decimal
+
+from core.domain.models import Bar, Direction, SignalSpec
+
+
+def D(value) -> Decimal:
+    return Decimal(str(value))
+
+
+def bar(ts: datetime, o, h, l, c) -> Bar:
+    return Bar(ts=ts, open=D(o), high=D(h), low=D(l), close=D(c), volume=D(1000))
+
+
+def flat_bars(calendar: SessionCalendar, start: datetime, end: datetime, price) -> list[Bar]:
+    return [bar(minute, price, price, price, price) for minute in calendar.expected_minutes(start, end)]
+
+
+def long_signal(**overrides) -> SignalSpec:
+    values = dict(
+        ticker="AAPL",
+        direction=Direction.LONG,
+        entry_zone_low=D(100),
+        entry_zone_high=D(102),
+        stop=D(97),
+        target1=D(106),
+        target2=D(110),
+        trigger_price=None,
+        valid_sessions=3,
+    )
+    values.update(overrides)
+    return SignalSpec(**values)
