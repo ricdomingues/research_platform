@@ -69,7 +69,7 @@ def new_order_state(
         state = replace(
             state,
             zone_lost=inherited.zone_lost,
-            zone_ever_lost=inherited.zone_lost,
+            zone_ever_lost=inherited.zone_lost or inherited.entry_eligible_from is not None,  # entry_eligible_from only set by ZONE_RECLAIMED
             entry_eligible_from=inherited.entry_eligible_from,
             trigger_hit_at=inherited.trigger_hit_at,
         )

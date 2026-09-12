@@ -1,5 +1,6 @@
+from core.domain.hashing import sha256_hex
 from core.domain.models import (
-    Direction, EntryPath, EventType, FillConfig, OrderStatus, ZoneLostPolicy,
+    Direction, EntryPath, EventType, FillConfig, GatingState, OrderStatus, ZoneLostPolicy,
 )
 from core.fills import get_fill_model
 from core.fills.v1 import new_order_state, run_bars, step
@@ -175,3 +176,41 @@ def test_ignores_non_expected_minutes_and_reprocessed_bars():
     first = step(state, bar(et("2025-11-25", "09:30"), 99.5, 99.8, 99, 99.6), ctx)
     again = step(first.state, bar(et("2025-11-25", "09:30"), 99.5, 99.8, 99, 99.6), ctx)
     assert again.events == () and again.state == first.state
+
+
+def test_inherited_reclaimed_state_marks_entry_path_reclaimed():
+    ctx = make_ctx()
+    inherited = GatingState(OrderStatus.PENDING, zone_lost=False, entry_eligible_from=et("2025-11-25", "09:31"), trigger_hit_at=None)
+    result = new_order_state(ctx, inherited=inherited)
+    assert result.state.zone_ever_lost
+    state = step(result.state, bar(et("2025-11-25", "09:31"), 101, 101.5, 100.5, 101.2), ctx)
+    assert types(state.events) == [EventType.FILLED]
+    assert state.events[0].payload["entry_path"] is EntryPath.RECLAIMED
+
+
+def test_inherited_state_is_copied_hashed_and_must_be_pending():
+    ctx = make_ctx()
+    gating = GatingState(OrderStatus.PENDING, zone_lost=True, entry_eligible_from=None, trigger_hit_at=et("2025-11-25", "09:30"))
+    result = new_order_state(ctx, inherited=gating)
+    assert result.state.zone_lost and result.state.trigger_hit_at == et("2025-11-25", "09:30")
+    assert result.events[0].payload["inherited_signal_state"] == gating.as_payload()
+    assert result.events[0].payload["inherited_signal_state_hash"] == sha256_hex(gating.as_payload())
+
+    non_pending = GatingState(OrderStatus.OPEN, zone_lost=False, entry_eligible_from=None, trigger_hit_at=None)
+    try:
+        new_order_state(ctx, inherited=non_pending)
+        assert False, "should raise ValueError"
+    except ValueError as e:
+        assert "inherited signal state must be PENDING" in str(e)
+
+
+def test_extra_payload_cannot_override_reserved_keys():
+    ctx = make_ctx()
+    try:
+        new_order_state(ctx, extra_payload={"signal": 1})
+        assert False, "should raise ValueError"
+    except ValueError as e:
+        assert "extra_payload overrides reserved keys" in str(e)
+
+    result = new_order_state(ctx, extra_payload={"actionability_run_id": "r1"})
+    assert result.events[0].payload["actionability_run_id"] == "r1"
