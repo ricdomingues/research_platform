@@ -101,3 +101,33 @@ def test_order_state_rejects_naive_datetimes():
 def test_event_rejects_bar_ts_with_seconds():
     with pytest.raises(ValueError):
         Event(EventType.FILLED, "FILLED", et("2025-11-25", "10:00", 5))
+
+
+def test_datetimes_are_normalized_to_utc():
+    from datetime import date, timezone
+    from zoneinfo import ZoneInfo
+
+    from core.domain.calendar import Session
+
+    ny = ZoneInfo("America/New_York")
+    open_et = datetime(2025, 11, 25, 9, 30, tzinfo=ny)
+    close_et = datetime(2025, 11, 25, 16, 0, tzinfo=ny)
+    session = Session(date(2025, 11, 25), open_et, close_et)
+    assert session.open_utc.tzinfo is timezone.utc and session.close_utc.tzinfo is timezone.utc
+    assert session.open_utc == open_et
+
+    ctx = OrderContext(long_signal(), FillConfig(), make_calendar(), open_et,
+                       datetime(2025, 11, 27, 16, 0, tzinfo=ny))
+    assert ctx.evaluation_start_ts.tzinfo is timezone.utc
+    assert ctx.valid_until_ts.tzinfo is timezone.utc
+
+    names = ("entry_eligible_from", "trigger_hit_at", "stop_active_from", "opened_at",
+             "closed_at", "final_event_ts", "last_bar_ts")
+    state = OrderState(**{name: open_et for name in names})
+    for name in names:
+        assert getattr(state, name).tzinfo is timezone.utc
+        assert getattr(state, name) == open_et
+
+    event = Event(EventType.FILLED, "FILLED", open_et)
+    assert event.bar_ts.tzinfo is timezone.utc
+    assert Bar(open_et, D(1), D(1), D(1), D(1)).ts.tzinfo is timezone.utc

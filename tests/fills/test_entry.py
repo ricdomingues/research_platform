@@ -214,3 +214,19 @@ def test_extra_payload_cannot_override_reserved_keys():
 
     result = new_order_state(ctx, extra_payload={"actionability_run_id": "r1"})
     assert result.events[0].payload["actionability_run_id"] == "r1"
+
+
+def test_et_aware_bar_produces_same_event_key_and_hash_as_utc_bar():
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+
+    ctx = make_ctx()
+    utc_bar = bar(et("2025-11-25", "09:31"), 99.5, 99.8, 99, 99.6)
+    et_bar = bar(utc_bar.ts.astimezone(ZoneInfo("America/New_York")), 99.5, 99.8, 99, 99.6)
+    (utc_event,) = step(start(ctx), utc_bar, ctx).events
+    (et_event,) = step(start(ctx), et_bar, ctx).events
+    assert et_event.type is EventType.ZONE_LOST
+    assert et_event.event_key == utc_event.event_key == "ZONE_LOST:2025-11-25T14:31:00+00:00"
+    assert et_event.payload_hash == utc_event.payload_hash
+    assert et_event.bar_ts.tzinfo is timezone.utc
+    assert et_bar.ts.tzinfo is timezone.utc

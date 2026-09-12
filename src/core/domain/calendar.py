@@ -31,11 +31,13 @@ class Session:
     close_utc: datetime
 
     def __post_init__(self) -> None:
-        for ts in (self.open_utc, self.close_utc):
+        for name in ("open_utc", "close_utc"):
+            ts = getattr(self, name)
             if ts.tzinfo is None:
                 raise ValueError("session bounds must be timezone-aware")
             if not _is_whole_minute(ts):
                 raise ValueError("session bounds must be whole minutes")
+            object.__setattr__(self, name, ts.astimezone(timezone.utc))
         if self.close_utc <= self.open_utc:
             raise ValueError("session close must be after open")
 

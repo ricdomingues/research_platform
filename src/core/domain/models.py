@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -96,6 +96,15 @@ def _require_aware(value: datetime | None, name: str) -> None:
         raise ValueError(f"{name} must be timezone-aware")
 
 
+def _normalize_utc(obj: Any, *names: str) -> None:
+    """Require tz-aware datetimes and store them in UTC so isoformat()-based keys are unique."""
+    for name in names:
+        value = getattr(obj, name)
+        _require_aware(value, name)
+        if value is not None:
+            object.__setattr__(obj, name, value.astimezone(timezone.utc))
+
+
 @dataclass(frozen=True)
 class Bar:
     ts: datetime
@@ -111,6 +120,7 @@ class Bar:
             if not isinstance(getattr(self, name), Decimal):
                 raise TypeError(f"bar {name} must be Decimal")
         _require_aware(self.ts, "bar ts")
+        _normalize_utc(self, "ts")
         if self.ts.second or self.ts.microsecond:
             raise ValueError("bar ts must be a whole minute")
         if self.low > min(self.open, self.close) or self.high < max(self.open, self.close):
@@ -193,8 +203,7 @@ class OrderContext:
     valid_until_ts: datetime
 
     def __post_init__(self) -> None:
-        _require_aware(self.evaluation_start_ts, "evaluation_start_ts")
-        _require_aware(self.valid_until_ts, "valid_until_ts")
+        _normalize_utc(self, "evaluation_start_ts", "valid_until_ts")
         if self.valid_until_ts <= self.evaluation_start_ts:
             raise ValueError("valid_until_ts must be after evaluation_start_ts")
 
@@ -229,13 +238,10 @@ class OrderState:
     review_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        _require_aware(self.entry_eligible_from, "entry_eligible_from")
-        _require_aware(self.trigger_hit_at, "trigger_hit_at")
-        _require_aware(self.stop_active_from, "stop_active_from")
-        _require_aware(self.opened_at, "opened_at")
-        _require_aware(self.closed_at, "closed_at")
-        _require_aware(self.final_event_ts, "final_event_ts")
-        _require_aware(self.last_bar_ts, "last_bar_ts")
+        _normalize_utc(
+            self, "entry_eligible_from", "trigger_hit_at", "stop_active_from", "opened_at",
+            "closed_at", "final_event_ts", "last_bar_ts",
+        )
 
     @property
     def is_final(self) -> bool:
@@ -260,7 +266,7 @@ class Event:
     payload: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _require_aware(self.bar_ts, "bar_ts")
+        _normalize_utc(self, "bar_ts")
         if self.bar_ts is not None and (self.bar_ts.second or self.bar_ts.microsecond):
             raise ValueError("bar_ts must be a whole minute")
         if self.type in MARKET_EVENT_TYPES and self.bar_ts is None:
