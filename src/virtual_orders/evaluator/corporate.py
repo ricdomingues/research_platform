@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Engine, func, text
+from sqlalchemy import Engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.dataquality import dividends_agree
@@ -16,6 +16,7 @@ from core.domain.models import StepResult
 from virtual_orders.evaluator.commands import CommandInput, apply_command, freeze_order
 from virtual_orders.evaluator.outcomes import OrderOutcome
 from virtual_orders.ledger.events import known_hashes
+from virtual_orders.ledger.runs import last_segment_end
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.marketdata.sources import (
     DividendRecord,
@@ -26,11 +27,11 @@ from virtual_orders.marketdata.sources import (
 )
 from virtual_orders.storage.tables import dividends
 
-_OPEN_POSITIONS = text(
+_CANDIDATE_ORDERS = text(
     """
     SELECT o.id AS order_id, g.ticker AS ticker
     FROM orders o JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
-    WHERE NOT o.replay AND NOT st.frozen AND st.status IN ('OPEN', 'PARTIAL')
+    WHERE NOT o.replay AND NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')
     ORDER BY g.ticker, o.id
     """
 )
@@ -54,9 +55,10 @@ def _lookup(source: DividendSource, ticker: str, ex_date: date) -> DividendRecor
 
 
 def _dividend_command(
-    ex_date: date, amount: Decimal, first: Decimal | None, second: Decimal | None
+    ex_date: date, amount: Decimal, validated: bool, tolerance: Decimal, position_confirmed_by: datetime
 ) -> Callable[[CommandInput], StepResult]:
     event_key = f"DIVIDEND:{ex_date.isoformat()}"
+    ref = ex_date.isoformat()
 
     def command(inp: CommandInput) -> StepResult:
         if event_key in known_hashes(inp.conn, inp.order.id):
@@ -64,7 +66,24 @@ def _dividend_command(
             # per-ex-date memory in OrderState, so re-invoking it would double-count `dividends`
             # even though the duplicate event itself gets deduped at storage. Stay a true no-op.
             return StepResult(inp.projection.state)
-        validated = dividends_agree(first, second, inp.order.config.dividend_tolerance)
+        last_to = last_segment_end(inp.conn, inp.order.id)
+        if last_to is None or last_to < position_confirmed_by:
+            # qty_open as of `now` cannot be trusted unless the order has been evaluated through the
+            # close of the session before the ex-date: a later-arriving fill/exit would otherwise be
+            # silently missed or double-counted, and rebuild would happily agree with the wrong credit.
+            unconfirmed: StepResult = inp.model.flag_review(
+                inp.projection.state, "DIVIDEND_POSITION_UNCONFIRMED", ref
+            )
+            return unconfirmed
+        if inp.projection.state.qty_open <= 0:
+            return StepResult(inp.projection.state)
+        if inp.order.config.dividend_tolerance != tolerance:
+            # The stored record's `validated` flag was computed with the job's tolerance; an order
+            # configured with a different tolerance cannot trust that verdict either way.
+            mismatch: StepResult = inp.model.flag_review(
+                inp.projection.state, "DIVIDEND_TOLERANCE_MISMATCH", ref
+            )
+            return mismatch
         result: StepResult = inp.model.apply_dividend(inp.projection.state, inp.ctx, ex_date, amount, validated)
         return result
 
@@ -81,15 +100,22 @@ def apply_dividends(
     now: datetime,
 ) -> list[OrderOutcome]:
     probe = datetime.combine(ex_date, time(12), tzinfo=UTC)
-    session = next((s for s in calendar_for_window(probe, probe).sessions if s.day == ex_date), None)
-    if session is None:
+    sessions = calendar_for_window(probe, probe).sessions
+    index = next((i for i, s in enumerate(sessions) if s.day == ex_date), None)
+    if index is None:
         raise ValueError(f"{ex_date} is not a trading session")
+    if index == 0:
+        raise ValueError(f"no session loaded before {ex_date}")
+    session, previous_session = sessions[index], sessions[index - 1]
+    if now < previous_session.close_utc:
+        raise ValueError("dividends must be applied at or after the previous session's close")
     if now >= session.open_utc:
         raise ValueError("dividends must be applied before the ex-date session opens")
+    position_confirmed_by = previous_session.close_utc - timedelta(minutes=1)
 
     with engine.connect() as conn:
         by_ticker: dict[str, list[UUID]] = defaultdict(list)
-        for row in conn.execute(_OPEN_POSITIONS):
+        for row in conn.execute(_CANDIDATE_ORDERS):
             by_ticker[row.ticker].append(row.order_id)
 
     outcomes: list[OrderOutcome] = []
@@ -114,7 +140,12 @@ def apply_dividends(
                 )
                 .on_conflict_do_nothing(index_elements=["ticker", "ex_date"])
             )
-        command = _dividend_command(ex_date, amount, first_amount, second_amount)
+            # First check wins for the credit too: never use this call's own fresh lookups below.
+            stored = conn.execute(
+                select(dividends.c.amount, dividends.c.validated)
+                .where(dividends.c.ticker == ticker, dividends.c.ex_date == ex_date)
+            ).one()
+        command = _dividend_command(ex_date, stored.amount, stored.validated, tolerance, position_confirmed_by)
         outcomes.extend(apply_command(engine, order_id, command) for order_id in order_ids)
     return outcomes
 
