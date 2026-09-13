@@ -1,3 +1,5 @@
+import hashlib
+import json
 from decimal import Decimal
 
 import pytest
@@ -156,3 +158,75 @@ def test_rebuild_all_reports_each_order(engine):
     second = submit_default(engine, client_signal_id="other").auto_order_id
     cycles(engine, FakeBarSource(scenario_bars()), "10:30")
     assert rebuild_all_projections(engine) == {first: "OK", second: "OK"}
+
+
+def test_divergence_with_deleted_projection_records_incident_and_stays_fail_closed(engine):
+    """A divergence found while rebuilding a deleted projection must stay fail-closed (spec 6):
+
+    with no order_state row to freeze, "incident recorded + projection stays absent" is the
+    equivalent of freezing -- cycle/commands already refuse to touch an order with no
+    projection (PROJECTION_MISSING), so it never silently resumes.
+    """
+    order_id = submit_default(engine).auto_order_id
+    cycles(engine, FakeBarSource(scenario_bars()), "10:30")
+    with engine.connect() as conn:
+        run = get_run(conn, list_segments(conn, order_id)[0].run_id)
+    backdated_batch(engine, TICKER, [raw(DAY, "10:05", 104, 104, 104, 104)], run.data_as_of)
+
+    with engine.begin() as conn:
+        delete_projection(conn, order_id)
+    assert snapshot(engine, order_id) is None
+
+    with pytest.raises(errors.ProjectionIntegrityError) as caught:
+        rebuild_projection(engine, order_id)
+    assert caught.value.detail["reason"] == "SELECTED_DATA_HASH_MISMATCH"
+
+    with engine.connect() as conn:
+        incident = conn.execute(select(tables.integrity_incidents)).one()
+    assert incident.kind == errors.PROJECTION_INTEGRITY_ERROR and incident.order_id == order_id
+    assert snapshot(engine, order_id) is None  # no projection fabricated, no FROZEN event to fabricate it from
+
+    report = run_live_cycle(engine, feeds(FakeBarSource(scenario_bars())), code_version=CODE_VERSION,
+                            market_now=et(DAY, "11:30"))
+    outcome = next(o for o in report.outcomes if o.order_id == order_id)
+    assert outcome.error == errors.PROJECTION_MISSING
+
+
+def test_stored_event_identity_mismatch_is_detected(engine):
+    """A stored market event whose (event_key, payload_hash) no longer matches regeneration must diverge.
+
+    The corruption keeps `stored_events`' own material/hash check happy (hash_material and
+    payload_hash are updated together) so this exercises `_compare`'s identity check itself,
+    not the unrelated STORED_HASH_MISMATCH guard.
+    """
+    order_id = submit_default(engine).auto_order_id
+    cycles(engine, FakeBarSource(scenario_bars()), "10:30", "11:30", "13:00")
+    with engine.connect() as conn:
+        fill_seq, material = conn.execute(
+            text("SELECT seq, hash_material FROM order_events WHERE order_id = :id AND event_key = 'FILLED'"),
+            {"id": order_id},
+        ).one()
+
+    document = json.loads(material)
+    document["payload"]["rule"] = "TAMPERED"
+    tampered_material = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    tampered_hash = hashlib.sha256(tampered_material.encode("utf-8")).hexdigest()
+
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE order_events DISABLE TRIGGER USER"))
+        conn.execute(
+            text(
+                "UPDATE order_events SET hash_material = :material, payload_hash = :hash "
+                "WHERE order_id = :id AND event_key = 'FILLED'"
+            ),
+            {"material": tampered_material, "hash": tampered_hash, "id": order_id},
+        )
+        conn.execute(text("ALTER TABLE order_events ENABLE TRIGGER USER"))
+
+    with pytest.raises(errors.ProjectionIntegrityError) as caught:
+        rebuild_projection(engine, order_id)
+    diff = caught.value.detail["diff"]
+    assert any(entry["seq"] == fill_seq for entry in diff)
+    with engine.connect() as conn:
+        incident = conn.execute(select(tables.integrity_incidents)).one()
+    assert incident.kind == errors.PROJECTION_INTEGRITY_ERROR and incident.order_id == order_id
