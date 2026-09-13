@@ -122,6 +122,49 @@ def test_same_key_different_hash_aborts_records_incident_and_freezes(engine):
     assert count(engine, "integrity_incidents") == 2 and count(engine, "order_events") == 3
 
 
+def test_quarantine_incident_survives_when_order_row_is_missing(engine):
+    missing_order_id = uuid4()
+
+    def attempt():
+        raise errors.LedgerIntegrityError(
+            errors.EVENT_HASH_CONFLICT, "no order row backs this incident", order_id=missing_order_id,
+        )
+
+    with pytest.raises(errors.LedgerIntegrityError) as caught:
+        run_guarded(engine, attempt)
+    assert caught.value.kind == errors.EVENT_HASH_CONFLICT and caught.value.order_id == missing_order_id
+    with engine.connect() as conn:
+        incident = conn.execute(select(tables.integrity_incidents)).one()
+    assert incident.order_id is None
+    assert incident.detail["order_id"] == str(missing_order_id)
+    assert count(engine, "integrity_incidents") == 1
+
+
+def test_quarantine_records_incident_even_when_freeze_step_fails(engine, monkeypatch):
+    _, order, _, _ = seed(engine)
+    monkeypatch.setattr(
+        "virtual_orders.ledger.quarantine.apply_result",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("freeze storage boom")),
+    )
+    innocent = Event(EventType.NEEDS_REVIEW, "NEEDS_REVIEW:X:1", payload={"reason": "X", "ref": "1"})
+    tampered = Event(EventType.ORDER_CREATED, "ORDER_CREATED", payload={"tampered": True})
+
+    def attempt():
+        with engine.begin() as conn:
+            append_events(conn, order, [innocent, tampered], next_seq=2)
+
+    with pytest.raises(errors.LedgerIntegrityError) as caught:
+        run_guarded(engine, attempt)
+    assert caught.value.kind == errors.EVENT_HASH_CONFLICT
+
+    with engine.connect() as conn:
+        incidents = conn.execute(select(tables.integrity_incidents)).all()
+    kinds = [row.kind for row in incidents]
+    assert kinds == [errors.EVENT_HASH_CONFLICT, "QUARANTINE_FREEZE_FAILED"]
+    assert incidents[0].order_id == order.id
+    assert incidents[1].detail["original_kind"] == errors.EVENT_HASH_CONFLICT
+
+
 def test_market_event_before_evaluation_start_is_rejected(engine):
     _, order, ctx, _ = seed(engine)
     early = Event(EventType.TRIGGER_HIT, "TRIGGER_HIT", ctx.evaluation_start_ts - timedelta(minutes=1))
