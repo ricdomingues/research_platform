@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Connection, Engine, select
 
+from core.domain.models import FillConfig
 from core.fills import get_fill_model
 from virtual_orders.evaluator.context import build_order_context
 from virtual_orders.evaluator.history import regenerate_created, regenerate_history
@@ -39,6 +40,7 @@ from virtual_orders.storage.codec import config_from_snapshot, config_to_snapsho
 from virtual_orders.storage.tables import dividends, orders
 
 ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
+REJECTED_OVERRIDES = frozenset({"dividend_tolerance"})  # RECALCULATE credits the stored validated dividend row
 
 
 class ReplayMode(StrEnum):
@@ -69,7 +71,16 @@ def select_source_orders(
     if order_ids is not None and has_interval:
         raise ReplaySelectionError("use order_ids or an interval, not both")
     if order_ids is not None:
-        return list(dict.fromkeys(order_ids))
+        unique = list(dict.fromkeys(order_ids))
+        replays = sorted(
+            str(order_id)
+            for order_id in conn.execute(
+                select(orders.c.id).where(orders.c.id.in_(unique), orders.c.replay.is_(True))
+            ).scalars()
+        )
+        if replays:
+            raise ReplaySelectionError(f"replay orders cannot be replayed: {', '.join(replays)}")
+        return unique
     if created_from is None or created_to is None:
         raise ReplaySelectionError("an interval needs both created_from and created_to")
     return list(conn.execute(
@@ -170,6 +181,28 @@ def reproduce_orders(
     )
 
 
+def validate_recalculation_request(
+    fill_model_version: str | None, config_overrides: Mapping[str, Any] | None
+) -> None:
+    """Rejects a RECALCULATE request up front (D15) instead of failing per source inside the batch."""
+    if fill_model_version is not None:
+        try:
+            get_fill_model(fill_model_version)
+        except KeyError as exc:
+            raise ReplaySelectionError(f"unknown fill_model_version: {fill_model_version}") from exc
+    overrides = dict(config_overrides or {})
+    unknown = sorted(set(overrides) - {f.name for f in fields(FillConfig)})
+    if unknown:
+        raise ReplaySelectionError(f"unknown config_overrides: {', '.join(unknown)}")
+    rejected = sorted(set(overrides) & REJECTED_OVERRIDES)
+    if rejected:
+        raise ReplaySelectionError(f"config_overrides not applied by RECALCULATE: {', '.join(rejected)}")
+    try:
+        config_from_snapshot({**config_to_snapshot(FillConfig()), **to_document(overrides)})
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise ReplaySelectionError(f"invalid config_overrides: {exc}") from exc
+
+
 def _chunks_by_dividend(
     minutes: Sequence[datetime], session_day_of: Mapping[datetime, date], dividend_days: set[date]
 ) -> list[tuple[date | None, list[datetime]]]:
@@ -189,7 +222,7 @@ def _chunks_by_dividend(
     return chunks
 
 
-def recalculate_order(
+def _recalculate_order(
     engine: Engine,
     source_id: UUID,
     *,
@@ -283,12 +316,13 @@ def recalculate_orders(
     data_as_of: datetime | None = None,
 ) -> ReplayReport:
     if data_as_of is not None and data_as_of.tzinfo is None:
-        raise ValueError("data_as_of must be timezone-aware")
+        raise ReplaySelectionError("data_as_of must be timezone-aware")
+    validate_recalculation_request(fill_model_version, config_overrides)
     with engine.connect() as conn:
         source_ids = select_source_orders(conn, order_ids=order_ids, created_from=created_from, created_to=created_to)
     watermark = acquire_data_as_of(engine)
     if data_as_of is not None and data_as_of > watermark:
-        raise ValueError("data_as_of cannot be later than the ingestion watermark")
+        raise ReplaySelectionError("data_as_of cannot be later than the ingestion watermark")
     as_of = (data_as_of or watermark).astimezone(UTC)
     with engine.begin() as conn:
         run = start_run(conn, RunKind.REPLAY, as_of, code_version, detail={
@@ -297,7 +331,7 @@ def recalculate_orders(
         })
     return _run_replay_batch(
         engine, run.run_id, ReplayMode.RECALCULATE, source_ids,
-        lambda source_id: recalculate_order(
+        lambda source_id: _recalculate_order(
             engine, source_id, code_version=code_version, data_as_of=as_of,
             fill_model_version=fill_model_version, config_overrides=config_overrides,
         ),
