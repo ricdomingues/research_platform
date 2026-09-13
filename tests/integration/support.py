@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import Engine, func, select
 
+from core.domain.models import FillConfig
 from tests.support import et
+from virtual_orders.evaluator.signals import SignalSubmission, submit_signal
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.marketdata.gateway import MarketDataGateway
 from virtual_orders.marketdata.sources import DataTier, RawBar, SourceUnavailable
@@ -95,3 +98,43 @@ def count(engine: Engine, table_name: str) -> int:
     table = tables.metadata.tables[table_name]
     with engine.connect() as conn:
         return int(conn.execute(select(func.count()).select_from(table)).scalar_one())
+
+
+CODE_VERSION = "test-sha"
+SIGNAL_CREATED_AT = et(DAY, "09:00")
+
+
+def signal_body(**overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "client_signal_id": "rex-2025-11-25-aapl",
+        "strategy": "REXSHARE",
+        "strategy_version": "1.0",
+        "source": "test",
+        "ticker": TICKER,
+        "direction": "LONG",
+        "entry_zone_low": Decimal("100"),
+        "entry_zone_high": Decimal("102"),
+        "stop": Decimal("97"),
+        "target1": Decimal("106"),
+        "target2": Decimal("110"),
+        "valid_sessions": 3,
+    }
+    body.update(overrides)
+    return body
+
+
+def scenario_bars(day: str = DAY, ticker: str = TICKER) -> list[RawBar]:
+    """201 bars 09:30-12:50: fill 10:05 @101, TARGET1 11:00 @106, TARGET2 12:50 @110 (r = 1.75)."""
+    return (
+        flat_raw(day, "09:30", "10:05", 105, ticker)
+        + [raw(day, "10:05", 101, 101.5, 100.5, 101.2, ticker=ticker)]
+        + flat_raw(day, "10:06", "11:00", 103, ticker)
+        + [raw(day, "11:00", 105, 106, 104.8, 105.5, ticker=ticker)]
+        + flat_raw(day, "11:01", "12:50", 107, ticker)
+        + [raw(day, "12:50", 109, 110.5, 108.8, 110, ticker=ticker)]
+    )
+
+
+def submit_default(engine: Engine, **overrides: Any) -> SignalSubmission:
+    return submit_signal(engine, signal_body(**overrides), config=FillConfig(),
+                         code_version=CODE_VERSION, price_source=PRICE_SOURCE, now=SIGNAL_CREATED_AT)
