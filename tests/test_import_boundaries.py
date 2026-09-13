@@ -97,3 +97,13 @@ def test_dataquality_does_not_import_fills() -> None:
 def test_boundary_scan_sees_every_pure_file() -> None:
     assert len(_pure_files()) >= 12
     assert "core.domain.models" in _imported_modules(SRC / "core/fills/v1/engine.py")
+
+
+def test_boundary_scan_covers_the_platform_packages() -> None:
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/evaluator/cycle.py", "virtual_orders/evaluator/manual.py", "virtual_orders/ledger/events.py",
+        "virtual_orders/storage/tables.py", "virtual_orders/marketdata/asof.py", "virtual_orders/marketdata/gateway.py",
+    } <= neutral
+    for adapter in ("alpaca.py", "fmp.py", "yfinance_source.py", "http.py"):
+        assert (SRC / "virtual_orders/marketdata" / adapter).exists()
