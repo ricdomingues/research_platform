@@ -28,12 +28,18 @@ Cada item: decisão — motivo — custo se estiver errada.
 
 - **D1** — candle parcialmente anterior ao clique não é usado; auditoria `partial_bar_skipped` / `skipped_bar_ts` no `ORDER_CREATED` manual (spec seção 10).
 - **D2** — `order_state` reconstruível a partir de `order_events` + runs/segmentos + dados de mercado versionados; sem eventos por candle; `PROJECTION_INTEGRITY_ERROR` em divergência; teste A == B obrigatório no Plano 2 (spec seção 10).
+- **D3** — MFE no candle de stop: o movimento favorável do candle que dispara o stop não entra no MFE (pior caso). Confirma o ruling 13; congelado no v1 (spec seção 10, v1.2).
+- **D4** — `DATA_QUALITY` é imutável: fotografia com o conhecimento do `data_as_of` do job de fim de dia, emitida só para o pregão recém-fechado; reavaliações usam `DATA_QUALITY_RECHECK:{session_date}:{data_as_of}` ou `RECALCULATE` (spec seção 10, v1.2).
+
+## Regra de disciplina para o Plano 2
+
+`src/core/` (Plano 1) está congelado durante o desenvolvimento do banco/ledger. Só é alterado se um teste de integração do Plano 2 revelar um defeito real — e então com correção pequena, teste de regressão e registro explícito. Nada de melhorias oportunistas no motor.
 
 ## Entradas obrigatórias para o Plano 2
 
 1. **Rebuild por replay de comandos:** percorrer eventos por `seq` e reinvocar `step` (candles as-of de cada segmento), `apply_validity_end`, `cancel`, `freeze`, `flag_review`, `apply_dividend`; comparar `(event_key, payload_hash)`. Só `DATA_QUALITY`/`DATA_GAP` são aplicados sem comando.
 2. **Projeção persiste todos os campos de `OrderState`**, inclusive `zone_ever_lost`, `stop_previous`, `t1_done`, `best_price`, `worst_price`, `dividends`, `close_reason`, `review_reasons` (ordem), `frozen_reasons`. `FillConfig(**snapshot)` faz round-trip a partir de JSON.
-3. **`DATA_QUALITY` e back-fill do fornecedor:** recalcular um pregão antigo após correção muda o hash com a mesma chave → `IntegrityError`. Emitir apenas para o pregão recém-fechado registrando `data_as_of`, ou esclarecer a spec **antes** do job de fim de dia.
+3. **`DATA_QUALITY` e back-fill do fornecedor:** resolvido pela D4 — emitir apenas para o pregão recém-fechado, com `data_as_of` e `evaluation_run_id` no payload; nunca reemitir; reavaliações com `DATA_QUALITY_RECHECK:{session_date}:{data_as_of}`.
 4. **Actionability exige checagem de cobertura as-of** antes de rodar (senão candles ausentes tornam o sinal acionável) → `503 ACTIONABILITY_UNVERIFIABLE`.
 5. **Leitor as-of devolve exatamente um candle por minuto** (duplicatas tornariam o resultado dependente da ordem de entrada).
 6. **Ledger revalida `bar_ts ≥ evaluation_start_ts`** independentemente de `step()`; persiste `canonical_json(hash_material)` junto do `payload_hash` e nunca recalcula hash a partir de jsonb relido.

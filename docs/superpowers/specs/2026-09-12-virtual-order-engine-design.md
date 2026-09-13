@@ -1,8 +1,8 @@
 # Motor de Ordens Virtuais + Registro de Sinais (Ações EUA) — Design
 
 - **Data:** 2026-09-12
-- **Revisão:** 6 — emenda de esclarecimento v1.1: decisões D1 (candle parcial no clique) e D2 (reconstrução da projeção)
-- **Status:** **SPEC v1.1 FROZEN** (v1.0 em `spec/virtual-order-engine-v1.0`; v1.1 = v1.0 + seção 10)
+- **Revisão:** 7 — emenda v1.2: decisões D3 (MFE no candle de stop) e D4 (imutabilidade de `DATA_QUALITY`)
+- **Status:** **SPEC v1.2 FROZEN** (v1.0 em `spec/virtual-order-engine-v1.0`; v1.1 = v1.0 + D1/D2; v1.2 = v1.1 + D3/D4)
 - **Sub-projeto:** 01 da Research Platform
 
 ## 0. Regra de congelamento
@@ -678,3 +678,23 @@ Esclarecimentos aprovados pelo responsável pela spec. Não alteram regras de fi
   `PROJECTION_INTEGRITY_ERROR` (registrado em `integrity_incidents`; ordem `frozen`).
 - **Teste de integração obrigatório (Plano 2):** criar ordem → processar ~200 candles → fechar → salvar
   projeção A → apagar `order_state` → reconstruir → projeção B → `A == B`.
+
+### D3 — MFE no candle que dispara o stop
+
+- Em um candle onde o stop dispara (inclusive o candle de entrada), o movimento favorável desse candle
+  (`high` no LONG, `low` no SHORT) **não** entra no MFE; o movimento adverso continua entrando no MAE.
+- Motivo: a sequência intrabar é desconhecida; pelo pior caso, o stop pode ter ocorrido antes do extremo
+  favorável. Congelado no `fill_model v1`.
+
+### D4 — Imutabilidade de `DATA_QUALITY`
+
+- `DATA_QUALITY` é a fotografia da qualidade dos dados de um pregão **com o conhecimento disponível no
+  `data_as_of` do job de fim de dia** que o emitiu. O payload grava, além dos campos de 4.6,
+  `data_as_of` e `evaluation_run_id`.
+- O job de fim de dia emite `DATA_QUALITY:{session_date}` apenas para o pregão recém-fechado. O evento é
+  definitivo: correções posteriores do fornecedor **não** o alteram nem o reemitem.
+- Reavaliações históricas respondem a outra pergunta ("o que sabemos hoje sobre aquele pregão?") e usam
+  identidade própria: `DATA_QUALITY_RECHECK` com chave `DATA_QUALITY_RECHECK:{session_date}:{data_as_of}`,
+  ou o mecanismo `RECALCULATE` (nova ordem). Uma correção posterior não significa que o motor estava errado
+  naquele momento, e sim que o conjunto de informações disponível mudou.
+- Motivo: preservar "o que o motor sabia naquele instante" (3.6) e evitar a mesma chave com hash diferente.
