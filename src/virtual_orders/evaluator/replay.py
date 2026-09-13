@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -282,9 +282,14 @@ def recalculate_orders(
     config_overrides: Mapping[str, Any] | None = None,
     data_as_of: datetime | None = None,
 ) -> ReplayReport:
+    if data_as_of is not None and data_as_of.tzinfo is None:
+        raise ValueError("data_as_of must be timezone-aware")
     with engine.connect() as conn:
         source_ids = select_source_orders(conn, order_ids=order_ids, created_from=created_from, created_to=created_to)
-    as_of = data_as_of or acquire_data_as_of(engine)
+    watermark = acquire_data_as_of(engine)
+    if data_as_of is not None and data_as_of > watermark:
+        raise ValueError("data_as_of cannot be later than the ingestion watermark")
+    as_of = (data_as_of or watermark).astimezone(UTC)
     with engine.begin() as conn:
         run = start_run(conn, RunKind.REPLAY, as_of, code_version, detail={
             "mode": ReplayMode.RECALCULATE.value, "sources": source_ids,

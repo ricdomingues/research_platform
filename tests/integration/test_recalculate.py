@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -151,6 +151,33 @@ def test_missing_minute_is_missing_for_reproduce_but_present_for_recalculate(eng
 def test_selection_requires_ids_or_interval(engine):
     with pytest.raises(ReplaySelectionError):
         recalculate_orders(engine, code_version=CODE_VERSION)
+
+
+def test_data_as_of_naive_is_rejected(engine):
+    order_id, _ = closed_order(engine)
+    runs_before = count(engine, "evaluation_runs")
+    orders_before = count(engine, "orders")
+    naive = datetime(2025, 11, 26, 12, 0)  # noqa: DTZ001 - deliberately naive, to be rejected
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id], data_as_of=naive)
+
+    assert count(engine, "evaluation_runs") == runs_before
+    assert count(engine, "orders") == orders_before
+
+
+def test_data_as_of_after_watermark_is_rejected(engine):
+    order_id, _ = closed_order(engine)
+    watermark = acquire_data_as_of(engine)
+    runs_before = count(engine, "evaluation_runs")
+    orders_before = count(engine, "orders")
+    future = watermark + timedelta(days=1)
+
+    with pytest.raises(ValueError, match="ingestion watermark"):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id], data_as_of=future)
+
+    assert count(engine, "evaluation_runs") == runs_before
+    assert count(engine, "orders") == orders_before
 
 
 def test_unexpected_error_on_one_source_is_reported_during_recalculate(engine, monkeypatch):
