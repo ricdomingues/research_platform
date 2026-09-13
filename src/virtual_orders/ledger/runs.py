@@ -20,6 +20,7 @@ class RunKind(StrEnum):
     REPLAY = "REPLAY"
     ACTIONABILITY = "ACTIONABILITY"
     END_OF_DAY = "END_OF_DAY"
+    OPENING = "OPENING"
 
 
 class RunStatus(StrEnum):
