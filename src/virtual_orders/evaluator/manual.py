@@ -75,8 +75,6 @@ def _decide(
     price_source: str,
     policy: CoveragePolicy,
 ) -> tuple[Decision, dict[str, Any]]:
-    if decided_at >= signal.valid_until_ts:
-        return ManualOrderError(SIGNAL_EXPIRED), {}
     ticker = signal.spec.ticker
     start = signal.evaluation_start_ts
     bar_end = min(floor_minute(decided_at), signal.valid_until_ts)
@@ -92,9 +90,16 @@ def _decide(
         "selected_data_hash": data_hash,
         "coverage_evidence": coverage.evidence,
     }
-    if not coverage.verified:
+    # CoverageDecision contract: verified=True must mean no unresolved minutes. A policy that violates this
+    # (claims verified with leftover unresolved minutes) is still treated as unverifiable -- never silently
+    # let build_manual_order replay primary bars with holes -- and the violation itself is recorded (D7).
+    if not coverage.verified or coverage.unresolved:
         unresolved = sorted(coverage.unresolved)
-        detail = {**audit, "missing_count": len(unresolved), "missing_minutes": unresolved[:MAX_REPORTED_MISSING]}
+        detail: dict[str, Any] = {
+            **audit, "missing_count": len(unresolved), "missing_minutes": unresolved[:MAX_REPORTED_MISSING],
+        }
+        if coverage.verified and coverage.unresolved:
+            detail["policy_contract_violation"] = True
         return ManualOrderError(ACTIONABILITY_UNVERIFIABLE, None, detail), audit
 
     model = get_fill_model(DEFAULT_FILL_MODEL_VERSION)
@@ -103,6 +108,7 @@ def _decide(
         "actionability_data_as_of": run.data_as_of,
         "actionability_selected_data_hash": data_hash,
         "actionability_coverage_policy": policy.name,
+        "actionability_coverage_evidence": coverage.evidence,
     }
     try:
         built = build_manual_order(model, ctx, bars, decided_at, extra_payload=extra)
@@ -136,18 +142,20 @@ def create_manual_order(
 ) -> ManualOrderCreated:
     with engine.connect() as conn:
         signal = get_signal(conn, signal_id)
+    # T is the click, captured once (spec 3.4.1): used unchanged for both the ingest window ceiling and the
+    # decision, so a fetch that straddles a minute boundary can never move T or spuriously fail actionability.
+    decided_at = (created_at or datetime.now(UTC)).astimezone(UTC)
+    expired = decided_at >= signal.valid_until_ts
     ingest_error: str | None = None
-    if gateway is not None:
-        wall = (created_at or datetime.now(UTC)).astimezone(UTC)
+    if gateway is not None and not expired:
         try:
             ingest_bars(engine, gateway.bar_source(price_source), signal.spec.ticker, signal.evaluation_start_ts,
-                        min(floor_minute(wall), signal.valid_until_ts))
+                        min(floor_minute(decided_at), signal.valid_until_ts))
         except UnknownDataSource as exc:
             ingest_error = f"UNKNOWN_DATA_SOURCE: {exc}"
         except (SourceUnavailable, SourceDataError) as exc:
             ingest_error = str(exc)
     data_as_of = acquire_data_as_of(engine)
-    decided_at = (created_at or data_as_of).astimezone(UTC)
     ctx = signal_context(signal, config)
     base = {"signal_id": signal.id, "ticker": signal.spec.ticker, "price_source": price_source,
             "coverage_policy": coverage_policy.name}
@@ -157,7 +165,11 @@ def create_manual_order(
                         detail={**base, "created_at": decided_at})
         audit: dict[str, Any] = {}
         outcome: Decision
-        if ingest_error is not None:
+        if expired:
+            # Checked before ingest (never mind a failing provider for a signal that is already past its
+            # window): no fetch, no 503 -- an expired signal is always 422 SIGNAL_EXPIRED.
+            outcome = ManualOrderError(SIGNAL_EXPIRED)
+        elif ingest_error is not None:
             outcome = ManualOrderError(ACTIONABILITY_UNVERIFIABLE, None, {"ingest_error": ingest_error})
         else:
             outcome, audit = _decide(conn, run, signal, ctx, config, code_version, decided_at, price_source,

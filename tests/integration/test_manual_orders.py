@@ -64,6 +64,7 @@ def test_actionable_signal_creates_manual_order_with_audit(engine):
     assert detail["price_source"] == PRICE_SOURCE and order.price_source == PRICE_SOURCE
     assert detail["bar_from"] == et(DAY, "09:30").isoformat() and detail["bar_to"] == et(DAY, "12:59").isoformat()
     assert row["status"] == "PENDING" and created.partial_bar_skipped is False
+    assert payload["actionability_coverage_evidence"] == {}
 
 
 def test_click_inside_a_minute_skips_the_partial_bar(engine):
@@ -74,6 +75,17 @@ def test_click_inside_a_minute_skips_the_partial_bar(engine):
         payload = stored_events(conn, order.id)[0].prepared.payload
     assert created.partial_bar_skipped and payload["skipped_bar_ts"] == et(DAY, "13:00").isoformat()
     assert order.evaluation_start_ts == et(DAY, "13:01")
+
+
+def test_ingest_window_uses_the_single_captured_click_time(engine):
+    """T is captured once before any ingest (spec 3.4.1): the fetch ceiling is floor_minute(created_at),
+    not a later wall-clock read taken after ingestion (which could drift past a minute boundary)."""
+    signal_id = submit_default(engine, auto_order=False).signal_id
+    source = FakeBarSource(flat_raw(DAY, "09:30", "13:00", 105))
+    manual(engine, signal_id, source, "13:00", second=27)
+    assert source.calls
+    _, _, end = source.calls[-1]
+    assert end == et(DAY, "13:00")
 
 
 @pytest.mark.parametrize("bars, hm, code, reason", [
@@ -97,6 +109,19 @@ def test_expired_signal_is_rejected(engine):
     with pytest.raises(ManualOrderError) as caught:
         manual(engine, signal_id, None, "13:00", day="2025-11-28")
     assert (caught.value.code, caught.value.reason) == ("SIGNAL_EXPIRED", None)
+
+
+def test_expired_signal_is_rejected_before_a_failing_provider_is_even_asked(engine):
+    """Expiry is checked before ingestion: a failing provider must never turn a 422 into a 503."""
+    signal_id = submit_default(engine, auto_order=False).signal_id
+    source = FakeBarSource(flat_raw(DAY, "09:30", "13:00", 105))
+    source.failing.add(TICKER)
+    with pytest.raises(ManualOrderError) as caught:
+        manual(engine, signal_id, source, "13:00", day="2025-11-28")
+    assert (caught.value.code, caught.value.reason) == ("SIGNAL_EXPIRED", None)
+    assert source.calls == []
+    ((status, detail),) = actionability_runs(engine)
+    assert status is RunStatus.COMPLETED and detail["result"] == "SIGNAL_EXPIRED"
 
 
 def test_missing_minute_makes_actionability_unverifiable(engine):
@@ -171,6 +196,30 @@ def test_coverage_policy_is_pluggable_and_recorded(engine):
     assert status is RunStatus.FAILED and detail["coverage_policy"] == "TEST_ONE_MINUTE_SHORT"
     assert detail["coverage_evidence"] == {"checked_source": PRICE_SOURCE}
     assert detail["missing_minutes"] == [et(DAY, "09:30").isoformat()]
+
+
+class ContractViolatingPolicy:
+    """Test double: claims verified=True while still leaving the first expected minute unresolved."""
+
+    name = "TEST_CONTRACT_VIOLATION"
+
+    def assess(self, *, price_source, ticker, expected, bars):
+        return CoverageDecision(True, tuple(expected[:1]), {"checked_source": price_source})
+
+
+def test_coverage_policy_contract_violation_is_treated_as_unverifiable(engine):
+    """verified=True must mean no unresolved minutes; a policy that violates this never gets to build an
+    order from bars with holes, and the violation itself is recorded (D7)."""
+    signal_id = submit_default(engine, auto_order=False).signal_id
+    with pytest.raises(ManualOrderError) as caught:
+        manual(engine, signal_id, FakeBarSource(flat_raw(DAY, "09:30", "13:00", 105)), "13:00",
+               coverage_policy=ContractViolatingPolicy())
+    assert caught.value.code == "ACTIONABILITY_UNVERIFIABLE"
+    assert count(engine, "orders") == 0
+    ((status, detail),) = actionability_runs(engine)
+    assert status is RunStatus.FAILED and detail["coverage_policy"] == "TEST_CONTRACT_VIOLATION"
+    assert detail["policy_contract_violation"] is True
+    assert detail["missing_count"] == 1 and detail["missing_minutes"] == [et(DAY, "09:30").isoformat()]
 
 
 def test_actionability_outcomes_are_observable(engine):
