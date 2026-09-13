@@ -179,7 +179,7 @@ Dependências (unidirecionais): `virtual_orders.storage` → `core`; `virtual_or
 
 ### Task 1: Ferramentas (ruff, mypy) e testes de fronteira de imports
 
-Notas, entrada 8; Global Constraints (congelamento de `src/core`, market data neutra). Nenhum arquivo do Plano 1 é editado; o baseline medido em `deec356` é silenciado por configuração.
+Notas, entrada 8; Global Constraints (congelamento de `src/core`, market data neutra). Nenhum arquivo do Plano 1 é editado; o baseline medido em `48a7491` é silenciado por configuração.
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -317,7 +317,7 @@ select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
 known-first-party = ["core", "virtual_orders", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
-# Baseline do Plano 1 (congelado em deec356): silenciado, nunca corrigido.
+# Baseline do Plano 1 (congelado em 48a7491): silenciado, nunca corrigido.
 "src/core/actionability.py" = ["I001", "UP035", "UP017"]
 "src/core/dataquality.py" = ["I001", "UP035"]
 "src/core/domain/calendar.py" = ["UP035", "UP017", "B905"]
