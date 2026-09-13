@@ -154,6 +154,11 @@ def test_end_of_day_does_not_expire_an_order_whose_feed_failed(engine):
     assert first.expired == ()
     with engine.connect() as conn:
         assert read_projection_row(conn, order_id)["status"] == "PENDING"
+    # D12: a provider failure is an operational failure, not proof of a 100%-missing session.
+    assert [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == []
+    with engine.connect() as conn:
+        _, detail = latest_run_status(conn, first.quality.run_id)
+    assert detail["not_evaluated"] == {str(order_id): "PROVIDER_FAILURE"}
 
     source.failing.clear()
     second = run_end_of_day(engine, gateway=feeds(source), reference=FakeReference(), session_day=SESSION,
@@ -166,6 +171,41 @@ def test_end_of_day_does_not_expire_an_order_whose_feed_failed(engine):
     with engine.connect() as conn:
         row = read_projection_row(conn, order_id)
     assert row["status"] == "EXPIRED" and row["last_bar_ts"] == et(DAY, "15:59")
+
+
+def test_provider_failure_does_not_block_data_quality_for_a_healthy_ticker(engine):
+    """D12: PROVIDER FAILURE != DATA QUALITY FAILURE — a global feed failure for one ticker never
+    fabricates a 100%-missing DATA_QUALITY for that order, and never blocks a healthy sibling order."""
+    failing_id = submit_default(engine).auto_order_id
+    healthy_id = submit_default(engine, client_signal_id="rex-2025-11-25-msft", ticker="MSFT").auto_order_id
+    source = FakeBarSource(scenario_bars())
+    source.load(scenario_bars(ticker="MSFT"))
+    source.failing.add(TICKER)
+
+    report = end_of_day(engine, source)
+    assert f"{PRICE_SOURCE}:{TICKER}" in report.cycle.ingest_failures
+
+    failing_events = events(engine, failing_id)
+    assert [e for e in failing_events if e.type in ("DATA_QUALITY", "DATA_GAP", "NEEDS_REVIEW")] == []
+
+    (quality,) = [e for e in events(engine, healthy_id) if e.type == "DATA_QUALITY"]
+    assert quality.event_key == "DATA_QUALITY:2025-11-25"
+
+    with engine.connect() as conn:
+        _, detail = latest_run_status(conn, report.quality.run_id)
+    assert detail["not_evaluated"] == {str(failing_id): "PROVIDER_FAILURE"}
+
+
+def test_no_observations_does_not_emit_data_quality(engine):
+    """D12: a feed that answers but never produced a single bar for the session cannot measure
+    coverage either — NO_OBSERVATIONS, not a fabricated 100%-missing DATA_QUALITY."""
+    order_id = submit_default(engine).auto_order_id
+    report = end_of_day(engine, FakeBarSource())  # reachable feed, zero bars for the whole session
+    assert report.cycle.ingest_failures == {}
+    assert [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == []
+    with engine.connect() as conn:
+        _, detail = latest_run_status(conn, report.quality.run_id)
+    assert detail["not_evaluated"] == {str(order_id): "NO_OBSERVATIONS"}
 
 
 def test_rebuild_accepts_quality_records_and_review_commands(engine):

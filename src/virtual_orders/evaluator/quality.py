@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
@@ -87,6 +87,8 @@ def _quality_command(
     session: Session,
     minute_reference: dict[datetime, Bar] | None,
     daily_reference: tuple[Decimal, Decimal] | None,
+    unavailable_feeds: Collection[str],
+    not_evaluated: dict[str, str],
 ) -> Callable[[CommandInput], StepResult]:
     def command(inp: CommandInput) -> StepResult:
         state = inp.projection.state
@@ -100,7 +102,16 @@ def _quality_command(
         ticker = inp.signal.spec.ticker
         minutes = inp.ctx.calendar.expected_minutes(start, end)
         source_id = inp.order.price_source
+        # D12: a provider-wide failure or a session with zero observations is not evidence of missing
+        # candles — it is evidence that coverage could not be measured at all. Emitting DATA_QUALITY here
+        # would fabricate a 100%-missing session for a run that never actually saw the market.
+        if f"{source_id}:{ticker}" in unavailable_feeds:
+            not_evaluated[str(inp.order.id)] = "PROVIDER_FAILURE"
+            return StepResult(state)
         bars = bars_in_minutes(read_bars_as_of(inp.conn, ticker, source_id, start, end, run.data_as_of), minutes)
+        if minutes and not bars:
+            not_evaluated[str(inp.order.id)] = "NO_OBSERVATIONS"
+            return StepResult(state)
         quality = next((q for q in session_quality(inp.ctx.calendar, start, end, [b.ts for b in bars])
                         if q.day == session.day), None)
         if quality is None:
@@ -138,6 +149,7 @@ def run_session_quality(
     reference: ReferenceSource,
     code_version: str,
     market_now: datetime | None = None,
+    unavailable_feeds: Collection[str] = (),
 ) -> QualityReport:
     session = session_for_day(session_day)
     now = (market_now or datetime.now(UTC)).astimezone(UTC)
@@ -168,9 +180,12 @@ def run_session_quality(
                 daily_refs[ticker] = None
                 unavailable[f"{ticker}:1d"] = str(exc)
 
+        not_evaluated: dict[str, str] = {}
         outcomes: list[OrderOutcome] = []
         for row in candidates:
-            command = _quality_command(run, session, minute_refs[row.ticker], daily_refs[row.ticker])
+            command = _quality_command(
+                run, session, minute_refs[row.ticker], daily_refs[row.ticker], unavailable_feeds, not_evaluated
+            )
             outcomes.append(isolated(row.order_id, partial(apply_command, engine, row.order_id, command)))
 
         integrity_errors, order_errors = split_errors(outcomes)
@@ -178,6 +193,7 @@ def run_session_quality(
             finish_run(conn, run.run_id, RunStatus.COMPLETED, {
                 "session_day": session_day, "orders": len(outcomes), "unavailable": unavailable,
                 "integrity_errors": integrity_errors, "order_errors": order_errors,
+                "not_evaluated": not_evaluated,
             })
         return QualityReport(run.run_id, session_day, tuple(outcomes), unavailable)
     except Exception as exc:
@@ -203,5 +219,5 @@ def run_end_of_day(
     # Orders whose feed failed in this very cycle were not evaluated up to the close: never finalize them blind.
     expired = tuple(expire_due_orders(engine, now=market_now, exclude_feeds=tuple(cycle.ingest_failures)))
     quality = run_session_quality(engine, session_day=session_day, reference=reference, code_version=code_version,
-                                  market_now=market_now)
+                                  market_now=market_now, unavailable_feeds=tuple(cycle.ingest_failures))
     return EndOfDayReport(cycle, expired, quality)
