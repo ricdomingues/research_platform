@@ -156,6 +156,8 @@ def test_end_of_day_does_not_expire_an_order_whose_feed_failed(engine):
         assert read_projection_row(conn, order_id)["status"] == "PENDING"
     # D12: a provider failure is an operational failure, not proof of a 100%-missing session.
     assert [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == []
+    # The skipped quality pass emits nothing else for the order either.
+    assert [e for e in events(engine, order_id) if e.type in ("DATA_GAP", "NEEDS_REVIEW")] == []
     with engine.connect() as conn:
         _, detail = latest_run_status(conn, first.quality.run_id)
     assert detail["not_evaluated"] == {str(order_id): "PROVIDER_FAILURE"}
@@ -171,6 +173,12 @@ def test_end_of_day_does_not_expire_an_order_whose_feed_failed(engine):
     with engine.connect() as conn:
         row = read_projection_row(conn, order_id)
     assert row["status"] == "EXPIRED" and row["last_bar_ts"] == et(DAY, "15:59")
+    # D12 clarification 2b: the session skipped on the first pass is not permanently lost while it is
+    # still the just-closed session — re-running end of day before the next session closes, now with
+    # observations available, emits that session's first DATA_QUALITY, exactly once (still under D4).
+    assert [e.event_key for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == [
+        "DATA_QUALITY:2025-11-25"
+    ]
 
 
 def test_provider_failure_does_not_block_data_quality_for_a_healthy_ticker(engine):
@@ -203,6 +211,9 @@ def test_no_observations_does_not_emit_data_quality(engine):
     report = end_of_day(engine, FakeBarSource())  # reachable feed, zero bars for the whole session
     assert report.cycle.ingest_failures == {}
     assert [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == []
+    # D12: the skipped quality pass emits nothing at all for the order — not DATA_QUALITY,
+    # and not DATA_GAP or NEEDS_REVIEW either.
+    assert [e for e in events(engine, order_id) if e.type in ("DATA_GAP", "NEEDS_REVIEW")] == []
     with engine.connect() as conn:
         _, detail = latest_run_status(conn, report.quality.run_id)
     assert detail["not_evaluated"] == {str(order_id): "NO_OBSERVATIONS"}
