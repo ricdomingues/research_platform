@@ -24,6 +24,7 @@ from core.domain.models import Bar, Event, EventType, StepResult
 from virtual_orders.evaluator.commands import CommandInput, apply_command, expire_due_orders
 from virtual_orders.evaluator.cycle import CycleReport, run_live_cycle
 from virtual_orders.evaluator.outcomes import OrderOutcome
+from virtual_orders.ledger.errors import LedgerIntegrityError
 from virtual_orders.ledger.runs import RunInfo, RunKind, RunStatus, finish_run, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of, bars_in_minutes, read_bars_as_of
 from virtual_orders.marketdata.calendars import calendar_for_window
@@ -34,9 +35,9 @@ from virtual_orders.storage.tables import order_events
 _CANDIDATES = text(
     """
     SELECT o.id AS order_id, g.ticker AS ticker
-    FROM orders o JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
+    FROM orders o LEFT JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
     WHERE NOT o.replay AND o.evaluation_start_ts < :session_close
-      AND (st.final_event_ts IS NULL OR st.final_event_ts >= :session_open)
+      AND (st.order_id IS NULL OR st.final_event_ts IS NULL OR st.final_event_ts >= :session_open)
     ORDER BY g.ticker, o.id
     """
 )
@@ -54,7 +55,7 @@ class QualityReport:
 class EndOfDayReport:
     cycle: CycleReport
     expired: tuple[OrderOutcome, ...]
-    quality: QualityReport
+    quality: QualityReport | None
 
 
 def session_for_day(day: date) -> Session:
@@ -63,6 +64,16 @@ def session_for_day(day: date) -> Session:
     if session is None:
         raise ValueError(f"{day} is not a trading session")
     return session
+
+
+def _require_just_closed(session: Session, now: datetime) -> None:
+    """D4: a definitive DATA_QUALITY may only be written for the session that just closed."""
+    error = ValueError("DATA_QUALITY can only be emitted for the session that just closed")
+    if session.close_utc > now:
+        raise error
+    calendar = calendar_for_window(min(session.open_utc, now), max(session.close_utc, now))
+    if any(s.day > session.day and s.close_utc <= now for s in calendar.sessions):
+        raise error
 
 
 def _already_emitted(conn: Connection, order_id: UUID, event_key: str) -> bool:
@@ -121,41 +132,65 @@ def _quality_command(
 
 
 def run_session_quality(
-    engine: Engine, *, session_day: date, reference: ReferenceSource, code_version: str
+    engine: Engine,
+    *,
+    session_day: date,
+    reference: ReferenceSource,
+    code_version: str,
+    market_now: datetime | None = None,
 ) -> QualityReport:
     session = session_for_day(session_day)
+    now = (market_now or datetime.now(UTC)).astimezone(UTC)
+    _require_just_closed(session, now)  # validated before any run row is created
+
     data_as_of = acquire_data_as_of(engine)
-    with engine.begin() as conn:
-        run = start_run(conn, RunKind.END_OF_DAY, data_as_of, code_version, detail={"session_day": session_day})
-    with engine.connect() as conn:
-        candidates = conn.execute(
-            _CANDIDATES, {"session_open": session.open_utc, "session_close": session.close_utc}
-        ).all()
+    run: RunInfo | None = None
+    try:
+        with engine.begin() as conn:
+            run = start_run(conn, RunKind.END_OF_DAY, data_as_of, code_version, detail={"session_day": session_day})
+        with engine.connect() as conn:
+            candidates = conn.execute(
+                _CANDIDATES, {"session_open": session.open_utc, "session_close": session.close_utc}
+            ).all()
 
-    unavailable: dict[str, str] = {}
-    minute_refs: dict[str, dict[datetime, Bar] | None] = {}
-    daily_refs: dict[str, tuple[Decimal, Decimal] | None] = {}
-    for ticker in sorted({row.ticker for row in candidates}):
-        try:
-            minute_refs[ticker] = reference.fetch_minute_bars(ticker, session_day)
-        except (SourceUnavailable, SourceDataError) as exc:
-            minute_refs[ticker] = None
-            unavailable[f"{ticker}:1m"] = str(exc)
-        try:
-            daily_refs[ticker] = reference.fetch_daily_range(ticker, session_day)
-        except (SourceUnavailable, SourceDataError) as exc:
-            daily_refs[ticker] = None
-            unavailable[f"{ticker}:1d"] = str(exc)
+        unavailable: dict[str, str] = {}
+        minute_refs: dict[str, dict[datetime, Bar] | None] = {}
+        daily_refs: dict[str, tuple[Decimal, Decimal] | None] = {}
+        for ticker in sorted({row.ticker for row in candidates}):
+            try:
+                minute_refs[ticker] = reference.fetch_minute_bars(ticker, session_day)
+            except (SourceUnavailable, SourceDataError) as exc:
+                minute_refs[ticker] = None
+                unavailable[f"{ticker}:1m"] = str(exc)
+            try:
+                daily_refs[ticker] = reference.fetch_daily_range(ticker, session_day)
+            except (SourceUnavailable, SourceDataError) as exc:
+                daily_refs[ticker] = None
+                unavailable[f"{ticker}:1d"] = str(exc)
 
-    outcomes = tuple(
-        apply_command(engine, row.order_id,
-                      _quality_command(run, session, minute_refs[row.ticker], daily_refs[row.ticker]))
-        for row in candidates
-    )
-    with engine.begin() as conn:
-        finish_run(conn, run.run_id, RunStatus.COMPLETED,
-                   {"session_day": session_day, "orders": len(outcomes), "unavailable": unavailable})
-    return QualityReport(run.run_id, session_day, outcomes, unavailable)
+        integrity_errors: dict[str, str] = {}
+        outcomes: list[OrderOutcome] = []
+        for row in candidates:
+            try:
+                outcome = apply_command(
+                    engine, row.order_id, _quality_command(run, session, minute_refs[row.ticker], daily_refs[row.ticker])
+                )
+            except LedgerIntegrityError as error:
+                outcome = OrderOutcome(row.order_id, error=error.kind)
+                integrity_errors[str(row.order_id)] = error.kind
+            outcomes.append(outcome)
+
+        with engine.begin() as conn:
+            finish_run(conn, run.run_id, RunStatus.COMPLETED, {
+                "session_day": session_day, "orders": len(outcomes), "unavailable": unavailable,
+                "integrity_errors": integrity_errors,
+            })
+        return QualityReport(run.run_id, session_day, tuple(outcomes), unavailable)
+    except Exception as exc:
+        if run is not None:
+            with engine.begin() as conn:
+                finish_run(conn, run.run_id, RunStatus.FAILED, {"session_day": session_day, "error": repr(exc)})
+        raise
 
 
 def run_end_of_day(
@@ -169,6 +204,9 @@ def run_end_of_day(
 ) -> EndOfDayReport:
     cycle = run_live_cycle(engine, gateway, code_version=code_version, market_now=market_now,
                            close_trailing_gap=True)
+    if cycle.skipped:
+        return EndOfDayReport(cycle, (), None)
     expired = tuple(expire_due_orders(engine, now=market_now))
-    quality = run_session_quality(engine, session_day=session_day, reference=reference, code_version=code_version)
+    quality = run_session_quality(engine, session_day=session_day, reference=reference, code_version=code_version,
+                                  market_now=market_now)
     return EndOfDayReport(cycle, expired, quality)

@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from tests.integration.support import (
     CODE_VERSION,
@@ -10,6 +11,7 @@ from tests.integration.support import (
     TICKER,
     FakeBarSource,
     FakeReference,
+    count,
     feeds,
     flat_raw,
     scenario_bars,
@@ -18,10 +20,13 @@ from tests.integration.support import (
 from tests.support import bar, et
 from virtual_orders.evaluator.quality import run_end_of_day, run_session_quality, session_for_day
 from virtual_orders.evaluator.rebuild import rebuild_projection
+from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import stored_events
 from virtual_orders.ledger.orders import delete_projection, read_projection_row
+from virtual_orders.ledger.runs import RunStatus, latest_run_status
 from virtual_orders.marketdata.ingest import ingest_bars
 from virtual_orders.marketdata.sources import RawBar
+from virtual_orders.storage.database import CYCLE_LOCK_KEY
 
 SESSION = date(2025, 11, 25)
 
@@ -71,7 +76,8 @@ def test_gap_missing_bar_reviews_and_d4_immutability(engine):
 
     source.load(flat_raw(DAY, "10:10", "10:45", 103))
     ingest_bars(engine, source, TICKER, et(DAY, "10:10"), et(DAY, "10:45"))
-    again = run_session_quality(engine, session_day=SESSION, reference=reference, code_version=CODE_VERSION)
+    again = run_session_quality(engine, session_day=SESSION, reference=reference, code_version=CODE_VERSION,
+                                market_now=et(DAY, "16:30"))
     assert [o.event_keys for o in again.outcomes] == [()]
     assert [e.identity() for e in events(engine, order_id)] == [e.identity() for e in stored]
 
@@ -128,3 +134,53 @@ def test_non_session_day_is_rejected():
     with pytest.raises(ValueError, match="not a trading session"):
         session_for_day(date(2025, 11, 27))
     assert session_for_day(SESSION).close_utc == et(DAY, "16:00")
+
+
+def test_projection_missing_order_is_quarantined_but_others_still_get_quality(engine):
+    healthy_id = submit_default(engine).auto_order_id
+    broken_id = submit_default(engine, client_signal_id="rex-2025-11-25-aapl-2").auto_order_id
+    with engine.begin() as conn:
+        delete_projection(conn, broken_id)
+
+    report = end_of_day(engine, FakeBarSource(scenario_bars()))
+    assert report.quality is not None
+    outcomes_by_order = {o.order_id: o for o in report.quality.outcomes}
+    assert outcomes_by_order[broken_id].error == errors.PROJECTION_MISSING
+    assert outcomes_by_order[healthy_id].error is None
+
+    (quality,) = [e for e in events(engine, healthy_id) if e.type == "DATA_QUALITY"]
+    assert quality.event_key == "DATA_QUALITY:2025-11-25"
+    assert count(engine, "integrity_incidents") >= 1
+
+    with engine.connect() as conn:
+        status, detail = latest_run_status(conn, report.quality.run_id)
+    assert status is RunStatus.COMPLETED
+    assert str(broken_id) in detail["integrity_errors"]
+
+
+def test_end_of_day_skips_quality_when_cycle_is_skipped(engine):
+    order_id = submit_default(engine).auto_order_id
+    with engine.connect() as holder:
+        holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": CYCLE_LOCK_KEY})
+        report = end_of_day(engine, FakeBarSource(scenario_bars()))
+        holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": CYCLE_LOCK_KEY})
+
+    assert report.cycle.skipped
+    assert report.expired == ()
+    assert report.quality is None
+    assert [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == []
+    assert count(engine, "evaluation_runs") == 0
+
+
+def test_run_session_quality_rejects_an_open_session(engine):
+    submit_default(engine)
+    with pytest.raises(ValueError, match="just closed"):
+        run_session_quality(engine, session_day=SESSION, reference=FakeReference(), code_version=CODE_VERSION,
+                            market_now=et(DAY, "15:00"))
+
+
+def test_run_session_quality_rejects_a_stale_session_day(engine):
+    submit_default(engine)
+    with pytest.raises(ValueError, match="just closed"):
+        run_session_quality(engine, session_day=SESSION, reference=FakeReference(), code_version=CODE_VERSION,
+                            market_now=et("2025-11-26", "16:30"))
