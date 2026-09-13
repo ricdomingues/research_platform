@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from datetime import datetime
+from collections.abc import Iterable, Sequence
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -15,7 +15,7 @@ from tests.support import et
 from virtual_orders.evaluator.signals import SignalSubmission, submit_signal
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.marketdata.gateway import MarketDataGateway
-from virtual_orders.marketdata.sources import DataTier, RawBar, SourceUnavailable
+from virtual_orders.marketdata.sources import DataTier, DividendRecord, RawBar, SourceUnavailable, SplitRecord
 from virtual_orders.storage import tables
 
 TICKER = "AAPL"
@@ -138,3 +138,29 @@ def scenario_bars(day: str = DAY, ticker: str = TICKER) -> list[RawBar]:
 def submit_default(engine: Engine, **overrides: Any) -> SignalSubmission:
     return submit_signal(engine, signal_body(**overrides), config=FillConfig(),
                          code_version=CODE_VERSION, price_source=PRICE_SOURCE, now=SIGNAL_CREATED_AT)
+
+
+def dividend(ticker: str, day: str, amount: str) -> DividendRecord:
+    return DividendRecord(ticker, date.fromisoformat(day), Decimal(amount), None)
+
+
+class FakeDividends:
+    def __init__(self, name: str, records: Iterable[DividendRecord] = (), failing: bool = False) -> None:
+        self.name = name
+        self.records = list(records)
+        self.failing = failing
+
+    def fetch_dividends(self, ticker: str, start: date, end: date) -> list[DividendRecord]:
+        if self.failing:
+            raise SourceUnavailable(f"{self.name} unavailable (fake)")
+        return [r for r in self.records if r.ticker == ticker and start <= r.ex_date <= end]
+
+
+class FakeSplits:
+    def __init__(self, records: Iterable[SplitRecord] = ()) -> None:
+        self.records = list(records)
+        self.calls: list[tuple[tuple[str, ...], date, date]] = []
+
+    def fetch_splits(self, tickers: Sequence[str], start: date, end: date) -> list[SplitRecord]:
+        self.calls.append((tuple(tickers), start, end))
+        return [r for r in self.records if r.ticker in tickers and start <= r.ex_date <= end]
