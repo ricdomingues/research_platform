@@ -9,6 +9,7 @@ dependencies = [
     "pandas-market-calendars>=4.4",
     "psycopg[binary]>=3.2",
     "sqlalchemy>=2.0.36",
+    "yfinance>=0.2.50",
 ]
 
 [dependency-groups]
