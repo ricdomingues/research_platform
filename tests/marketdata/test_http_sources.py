@@ -164,3 +164,35 @@ def test_fixture_manifest_labels_every_fixture_as_synthetic():
     }
     files = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*") if p.is_file() and p.name != "README.md"}
     assert files and files <= labelled
+
+
+def test_alpaca_repeated_page_token_fails_instead_of_looping():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) > 5:  # self-terminating: without the fix the test fails here instead of looping forever
+            raise AssertionError("pagination looped")
+        return httpx.Response(200, text='{"bars": [], "next_page_token": "same"}')
+
+    source = AlpacaBars(client(handler), "key", "secret")
+    with pytest.raises(SourceDataError, match="repeated or invalid next_page_token"):
+        source.fetch_bars("AAPL", utc(14, 30), utc(14, 40))
+    assert len(calls) == 2
+
+
+def test_alpaca_pagination_is_capped(monkeypatch):
+    import virtual_orders.marketdata.alpaca as alpaca_module
+
+    monkeypatch.setattr(alpaca_module, "MAX_PAGES", 3)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) > 10:  # self-terminating without the cap
+            raise AssertionError("pagination was not capped")
+        return httpx.Response(200, text=f'{{"bars": [], "next_page_token": "t{len(calls)}"}}')
+
+    source = AlpacaBars(client(handler), "key", "secret")
+    with pytest.raises(SourceDataError, match="exceeded 3 pages"):
+        source.fetch_bars("AAPL", utc(14, 30), utc(14, 40))

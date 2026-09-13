@@ -14,6 +14,7 @@ from virtual_orders.marketdata.sources import DataTier, RawBar, SourceDataError,
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_IEX_SOURCE = "alpaca_iex"
+MAX_PAGES = 1000
 
 
 def _iso_z(ts: datetime) -> str:
@@ -51,7 +52,10 @@ class _AlpacaClient:
     def _pages(self, path: str, params: dict[str, str | int]) -> list[Any]:
         pages: list[Any] = []
         token: str | None = None
+        seen: set[str] = set()
         while True:
+            if len(pages) >= MAX_PAGES:
+                raise SourceDataError(f"Alpaca pagination for {path} exceeded {MAX_PAGES} pages")
             page_params = dict(params)
             if token:
                 page_params["page_token"] = token
@@ -62,9 +66,13 @@ class _AlpacaClient:
             if not isinstance(body, dict):
                 raise SourceDataError(f"unexpected Alpaca body for {path}")
             pages.append(body)
-            token = body.get("next_page_token")
-            if not token:
+            next_token = body.get("next_page_token")
+            if not next_token:
                 return pages
+            if not isinstance(next_token, str) or next_token in seen:
+                raise SourceDataError(f"Alpaca repeated or invalid next_page_token for {path}")
+            seen.add(next_token)
+            token = next_token
 
 
 class AlpacaBars(_AlpacaClient):
