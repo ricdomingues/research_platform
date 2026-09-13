@@ -19,6 +19,7 @@ from tests.integration.support import (
     submit_default,
 )
 from tests.support import et
+from virtual_orders.evaluator import replay
 from virtual_orders.evaluator.commands import cancel_order
 from virtual_orders.evaluator.cycle import run_live_cycle
 from virtual_orders.evaluator.manual import create_manual_order
@@ -27,7 +28,7 @@ from virtual_orders.evaluator.replay import ReplayMode, ReplaySelectionError, re
 from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import stored_events
 from virtual_orders.ledger.orders import get_order, load_projection, read_projection_row
-from virtual_orders.ledger.runs import get_run, list_segments
+from virtual_orders.ledger.runs import RunStatus, get_run, latest_run_status, list_segments
 from virtual_orders.marketdata.ingest import ingest_bars
 
 
@@ -133,3 +134,26 @@ def test_replay_orders_are_not_evaluated_live(engine):
     report = run_live_cycle(engine, feeds(bars), code_version=CODE_VERSION, market_now=et(DAY, "11:30"))
     assert [o.order_id for o in report.outcomes] == [source_id]
     assert identities(engine, replay_id)[-1][0] == "FILLED"
+
+
+def test_unexpected_error_on_one_source_is_reported_and_others_still_replay(engine, monkeypatch):
+    bad = submit_default(engine).auto_order_id
+    good = submit_default(engine, client_signal_id="second").auto_order_id
+    cycles(engine, FakeBarSource(scenario_bars()), "10:30", "11:30", "13:00")
+
+    real_regenerate_history = replay.regenerate_history
+
+    def failing_regenerate_history(conn, order):
+        if order.id == bad:
+            raise RuntimeError("boom")
+        return real_regenerate_history(conn, order)
+
+    monkeypatch.setattr(replay, "regenerate_history", failing_regenerate_history)
+
+    report = reproduce_orders(engine, code_version=CODE_VERSION, order_ids=[bad, good])
+    assert report.failures == {bad: "ERROR:RuntimeError"}
+    assert good in report.created
+    with engine.connect() as conn:
+        status, detail = latest_run_status(conn, report.run_id)
+    assert status == RunStatus.COMPLETED
+    assert detail["failures"] == {str(bad): "ERROR:RuntimeError"}

@@ -105,16 +105,27 @@ def reproduce_orders(
                         detail={"mode": ReplayMode.REPRODUCE.value, "sources": source_ids})
     created: dict[UUID, UUID] = {}
     failures: dict[UUID, str] = {}
-    for source_id in source_ids:
-        try:
-            created[source_id] = reproduce_order(engine, source_id, code_version=code_version)
-        except OrderNotFound:
-            failures[source_id] = ORDER_NOT_FOUND
-        except LedgerIntegrityError as error:
-            failures[source_id] = error.kind
-    with engine.begin() as conn:
-        finish_run(conn, run.run_id, RunStatus.COMPLETED, {
-            "created": {str(k): v for k, v in created.items()},
-            "failures": {str(k): v for k, v in failures.items()},
-        })
+    try:
+        for source_id in source_ids:
+            try:
+                created[source_id] = reproduce_order(engine, source_id, code_version=code_version)
+            except OrderNotFound:
+                failures[source_id] = ORDER_NOT_FOUND
+            except LedgerIntegrityError as error:
+                failures[source_id] = error.kind
+            except Exception as exc:  # noqa: BLE001 - one bad source must not abort the whole batch
+                failures[source_id] = f"ERROR:{type(exc).__name__}"
+        with engine.begin() as conn:
+            finish_run(conn, run.run_id, RunStatus.COMPLETED, {
+                "created": {str(k): v for k, v in created.items()},
+                "failures": {str(k): v for k, v in failures.items()},
+            })
+    except Exception as exc:  # noqa: BLE001 - the run must always reach a final status
+        with engine.begin() as conn:
+            finish_run(conn, run.run_id, RunStatus.FAILED, {
+                "error": repr(exc),
+                "created": {str(k): v for k, v in created.items()},
+                "failures": {str(k): v for k, v in failures.items()},
+            })
+        raise
     return ReplayReport(run.run_id, ReplayMode.REPRODUCE, created, failures)
