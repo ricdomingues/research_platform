@@ -5,11 +5,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from virtual_orders.marketdata.alpaca import ALPACA_IEX_SOURCE, AlpacaBars, AlpacaSplits
+from virtual_orders.marketdata.alpaca import ALPACA_IEX_SOURCE, AlpacaAssets, AlpacaBars, AlpacaSplits
 from virtual_orders.marketdata.fmp import FmpDividends
 from virtual_orders.marketdata.gateway import MarketDataGateway, UnknownDataSource
-from virtual_orders.marketdata.http import get_json
-from virtual_orders.marketdata.sources import DataTier, SourceDataError, SourceUnavailable
+from virtual_orders.marketdata.http import ResourceNotFound, get_json
+from virtual_orders.marketdata.sources import DataTier, SourceDataError, SourceUnavailable, TickerStatus
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -196,3 +196,62 @@ def test_alpaca_pagination_is_capped(monkeypatch):
     source = AlpacaBars(client(handler), "key", "secret")
     with pytest.raises(SourceDataError, match="exceeded 3 pages"):
         source.fetch_bars("AAPL", utc(14, 30), utc(14, 40))
+
+
+def test_http_404_is_a_distinct_not_found_error():
+    with pytest.raises(ResourceNotFound, match="HTTP 404"):
+        get_json(client(lambda request: httpx.Response(404)), "https://x.test/a", params={}, sleep=lambda s: None)
+    assert issubclass(ResourceNotFound, SourceUnavailable)
+
+
+def test_alpaca_assets_reports_an_active_tradable_ticker_read_only():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        symbol = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, text=fixture("alpaca/asset_active.json").replace('"AAPL"', f'"{symbol}"'))
+
+    check = AlpacaAssets(client(handler), "key", "secret")
+    assert check.check_ticker("AAPL") == TickerStatus("AAPL", True)
+    assert check.check_ticker("BRK.B") == TickerStatus("BRK.B", True)
+    assert [(r.method, r.url.host, r.url.path) for r in seen] == [
+        ("GET", "paper-api.alpaca.markets", "/v2/assets/AAPL"),
+        ("GET", "paper-api.alpaca.markets", "/v2/assets/BRK.B"),
+    ]
+    assert seen[0].headers["APCA-API-KEY-ID"] == "key"
+    assert check.name == "alpaca_assets"
+
+
+def test_alpaca_assets_inactive_unknown_untradable_and_invalid_symbols():
+    inactive = AlpacaAssets(client(lambda r: httpx.Response(200, text=fixture("alpaca/asset_inactive.json"))), "k", "s")
+    assert inactive.check_ticker("ZZZZ") == TickerStatus("ZZZZ", False, "INACTIVE")
+
+    untradable_body = fixture("alpaca/asset_active.json").replace('"tradable": true', '"tradable": false')
+    untradable = AlpacaAssets(client(lambda r: httpx.Response(200, text=untradable_body)), "k", "s")
+    assert untradable.check_ticker("AAPL") == TickerStatus("AAPL", False, "NOT_TRADABLE")
+
+    crypto_body = fixture("alpaca/asset_active.json").replace('"us_equity"', '"crypto"')
+    crypto = AlpacaAssets(client(lambda r: httpx.Response(200, text=crypto_body)), "k", "s")
+    assert crypto.check_ticker("AAPL") == TickerStatus("AAPL", False, "NOT_TRADABLE")
+
+    missing = AlpacaAssets(client(lambda r: httpx.Response(404, text='{"message": "not found"}')), "k", "s")
+    assert missing.check_ticker("NOPE") == TickerStatus("NOPE", False, "UNKNOWN_ASSET")
+
+    calls = []
+    guarded = AlpacaAssets(client(lambda r: calls.append(r) or httpx.Response(200)), "k", "s")
+    for symbol in ("../v2/orders", "aapl", "", "TOOLONGSYMBOL1"):
+        assert guarded.check_ticker(symbol) == TickerStatus(symbol, False, "INVALID_SYMBOL")
+    assert calls == []
+
+
+def test_alpaca_assets_unavailable_or_malformed_raise():
+    down = AlpacaAssets(client(lambda r: httpx.Response(503)), "k", "s", sleep=lambda s: None)
+    with pytest.raises(SourceUnavailable):
+        down.check_ticker("AAPL")
+    malformed = AlpacaAssets(client(lambda r: httpx.Response(200, text='{"status": "active"}')), "k", "s")
+    with pytest.raises(SourceDataError, match="malformed Alpaca asset"):
+        malformed.check_ticker("AAPL")
+    other_asset = AlpacaAssets(client(lambda r: httpx.Response(200, text=fixture("alpaca/asset_active.json"))), "k", "s")
+    with pytest.raises(SourceDataError, match="Alpaca asset symbol mismatch for MSFT"):
+        other_asset.check_ticker("MSFT")

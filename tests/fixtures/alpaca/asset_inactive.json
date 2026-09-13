@@ -1,0 +1,3 @@
+{"id": "00000000-0000-4000-8000-000000000002", "class": "us_equity", "exchange": "NYSE", "symbol": "ZZZZ",
+ "name": "Synthetic Delisted Example", "status": "inactive", "tradable": false, "marginable": false,
+ "shortable": false, "easy_to_borrow": false, "fractionable": false}
