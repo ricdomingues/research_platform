@@ -10,7 +10,7 @@ from sqlalchemy import Connection, Engine, text
 
 from core.fills import get_fill_model
 from virtual_orders.evaluator.context import load_order_context
-from virtual_orders.evaluator.outcomes import OrderOutcome
+from virtual_orders.evaluator.outcomes import OrderOutcome, isolated, split_errors
 from virtual_orders.ledger.errors import PROJECTION_MISSING, LedgerIntegrityError
 from virtual_orders.ledger.orders import load_projection, lock_order
 from virtual_orders.ledger.quarantine import run_guarded
@@ -128,10 +128,7 @@ def evaluate_order(
             )
             return OrderOutcome(order_id, tuple(p.event_key for p in appended.inserted), (window[0], bar_to))
 
-    try:
-        return run_guarded(engine, operation)
-    except LedgerIntegrityError as error:
-        return OrderOutcome(order_id, error=error.kind)
+    return isolated(order_id, lambda: run_guarded(engine, operation))
 
 
 def run_live_cycle(
@@ -175,6 +172,7 @@ def run_live_cycle(
                 for cursor in cursors
                 if f"{cursor.price_source}:{cursor.ticker}" not in failures
             )
+            integrity_errors, order_errors = split_errors(outcomes)
             with engine.begin() as conn:
                 finish_run(
                     conn,
@@ -183,7 +181,8 @@ def run_live_cycle(
                     {
                         "orders": len(outcomes),
                         "ingest_failures": failures,
-                        "integrity_errors": {str(o.order_id): o.error for o in outcomes if o.error},
+                        "integrity_errors": integrity_errors,
+                        "order_errors": order_errors,
                         "market_now": now,
                     },
                 )

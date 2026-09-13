@@ -6,7 +6,17 @@ import pytest
 
 from core.domain.models import Direction
 from core.fills import get_fill_model
-from tests.integration.support import CODE_VERSION, DAY, FakeBarSource, feeds, flat_raw, scenario_bars, submit_default
+from tests.integration.support import (
+    CODE_VERSION,
+    DAY,
+    PRICE_SOURCE,
+    FakeBarSource,
+    count,
+    feeds,
+    flat_raw,
+    scenario_bars,
+    submit_default,
+)
 from tests.support import et
 from virtual_orders.evaluator.commands import (
     OrderAlreadyFinal,
@@ -17,8 +27,9 @@ from virtual_orders.evaluator.commands import (
     freeze_order,
 )
 from virtual_orders.evaluator.cycle import evaluate_order, run_live_cycle
+from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import stored_events
-from virtual_orders.ledger.orders import load_projection, lock_order, read_projection_row
+from virtual_orders.ledger.orders import delete_projection, load_projection, lock_order, read_projection_row
 from virtual_orders.ledger.runs import RunKind, start_run
 from virtual_orders.ledger.writes import apply_result
 from virtual_orders.marketdata.asof import acquire_data_as_of
@@ -129,6 +140,25 @@ def test_expire_due_orders_only_touches_due_orders(engine):
     outcomes = expire_due_orders(engine, now=AFTER_VALIDITY)
     assert [(o.order_id, o.event_keys) for o in outcomes] == [(due, ("EXPIRED",))]
     assert keys(engine, later) == ["ORDER_CREATED"]
+
+
+def test_expire_due_orders_quarantines_projection_less_order_and_continues(engine):
+    broken = submit_default(engine).auto_order_id
+    healthy = submit_default(engine, client_signal_id="healthy").auto_order_id
+    with engine.begin() as conn:
+        delete_projection(conn, broken)
+    outcomes = {o.order_id: o for o in expire_due_orders(engine, now=AFTER_VALIDITY)}
+    assert outcomes[broken].error == errors.PROJECTION_MISSING
+    assert outcomes[healthy].event_keys == ("EXPIRED",)
+    assert count(engine, "integrity_incidents") == 1
+
+
+def test_expire_due_orders_skips_excluded_feeds(engine):
+    aapl = submit_default(engine).auto_order_id
+    msft = submit_default(engine, client_signal_id="msft", ticker="MSFT").auto_order_id
+    outcomes = expire_due_orders(engine, now=AFTER_VALIDITY, exclude_feeds=(f"{PRICE_SOURCE}:AAPL",))
+    assert [(o.order_id, o.event_keys) for o in outcomes] == [(msft, ("EXPIRED",))]
+    assert keys(engine, aapl) == ["ORDER_CREATED"]
 
 
 def test_freeze_and_review_commands_are_idempotent(engine):

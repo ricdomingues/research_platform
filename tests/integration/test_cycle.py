@@ -17,6 +17,7 @@ from tests.integration.support import (
     submit_default,
 )
 from tests.support import et
+from virtual_orders.evaluator import cycle as cycle_module
 from virtual_orders.evaluator.cycle import evaluate_order, run_live_cycle
 from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import append_events, stored_events
@@ -199,6 +200,48 @@ def test_missing_projection_is_quarantined_during_a_whole_cycle(engine):
     assert outcomes[bad_id].error == errors.PROJECTION_MISSING
     assert outcomes[good_id].event_keys == ("FILLED",)
     assert count(engine, "integrity_incidents") == 1
+
+
+def test_undecodable_projection_is_quarantined_without_stopping_the_cycle(engine):
+    bad_id = submit_default(engine).auto_order_id
+    good_id = submit_default(engine, client_signal_id="msft", ticker="MSFT").auto_order_id
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE order_state SET state_document = '{}'::jsonb WHERE order_id = :id"), {"id": bad_id})
+    source = FakeBarSource(scenario_bars() + scenario_bars(ticker="MSFT"))
+    report = cycle(engine, source, "10:30")
+    outcomes = {o.order_id: o for o in report.outcomes}
+    assert outcomes[bad_id].error == errors.PROJECTION_INTEGRITY_ERROR
+    assert outcomes[good_id].event_keys == ("FILLED",)
+    with engine.connect() as conn:
+        kinds = conn.execute(select(tables.integrity_incidents.c.kind).where(
+            tables.integrity_incidents.c.order_id == bad_id)).scalars().all()
+        status, detail = latest_run_status(conn, report.run_id)
+    assert errors.PROJECTION_INTEGRITY_ERROR in kinds
+    assert status is RunStatus.COMPLETED
+    assert detail["integrity_errors"] == {str(bad_id): errors.PROJECTION_INTEGRITY_ERROR}
+
+
+def test_unexpected_error_in_one_order_does_not_stop_the_cycle(engine, monkeypatch):
+    bad_id = submit_default(engine).auto_order_id
+    good_id = submit_default(engine, client_signal_id="msft", ticker="MSFT").auto_order_id
+    original = cycle_module.load_order_context
+
+    def exploding(conn, order):
+        if order.id == bad_id:
+            raise RuntimeError("boom")
+        return original(conn, order)
+
+    monkeypatch.setattr(cycle_module, "load_order_context", exploding)
+    source = FakeBarSource(scenario_bars() + scenario_bars(ticker="MSFT"))
+    report = cycle(engine, source, "10:30")
+    outcomes = {o.order_id: o for o in report.outcomes}
+    assert outcomes[bad_id].error == "ERROR:RuntimeError"
+    assert outcomes[good_id].event_keys == ("FILLED",)
+    with engine.connect() as conn:
+        status, detail = latest_run_status(conn, report.run_id)
+    assert status is RunStatus.COMPLETED
+    assert detail["order_errors"] == {str(bad_id): "ERROR:RuntimeError"} and detail["integrity_errors"] == {}
+    assert count(engine, "integrity_incidents") == 0
 
 
 def test_bars_are_read_as_of_the_run_watermark(engine):

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from functools import partial
 from uuid import UUID
 
 from sqlalchemy import Connection, Engine, select, text
@@ -23,8 +24,7 @@ from core.domain.calendar import Session
 from core.domain.models import Bar, Event, EventType, StepResult
 from virtual_orders.evaluator.commands import CommandInput, apply_command, expire_due_orders
 from virtual_orders.evaluator.cycle import CycleReport, run_live_cycle
-from virtual_orders.evaluator.outcomes import OrderOutcome
-from virtual_orders.ledger.errors import LedgerIntegrityError
+from virtual_orders.evaluator.outcomes import OrderOutcome, isolated, split_errors
 from virtual_orders.ledger.runs import RunInfo, RunKind, RunStatus, finish_run, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of, bars_in_minutes, read_bars_as_of
 from virtual_orders.marketdata.calendars import calendar_for_window
@@ -168,22 +168,16 @@ def run_session_quality(
                 daily_refs[ticker] = None
                 unavailable[f"{ticker}:1d"] = str(exc)
 
-        integrity_errors: dict[str, str] = {}
         outcomes: list[OrderOutcome] = []
         for row in candidates:
-            try:
-                outcome = apply_command(
-                    engine, row.order_id, _quality_command(run, session, minute_refs[row.ticker], daily_refs[row.ticker])
-                )
-            except LedgerIntegrityError as error:
-                outcome = OrderOutcome(row.order_id, error=error.kind)
-                integrity_errors[str(row.order_id)] = error.kind
-            outcomes.append(outcome)
+            command = _quality_command(run, session, minute_refs[row.ticker], daily_refs[row.ticker])
+            outcomes.append(isolated(row.order_id, partial(apply_command, engine, row.order_id, command)))
 
+        integrity_errors, order_errors = split_errors(outcomes)
         with engine.begin() as conn:
             finish_run(conn, run.run_id, RunStatus.COMPLETED, {
                 "session_day": session_day, "orders": len(outcomes), "unavailable": unavailable,
-                "integrity_errors": integrity_errors,
+                "integrity_errors": integrity_errors, "order_errors": order_errors,
             })
         return QualityReport(run.run_id, session_day, tuple(outcomes), unavailable)
     except Exception as exc:
@@ -206,7 +200,8 @@ def run_end_of_day(
                            close_trailing_gap=True)
     if cycle.skipped:
         return EndOfDayReport(cycle, (), None)
-    expired = tuple(expire_due_orders(engine, now=market_now))
+    # Orders whose feed failed in this very cycle were not evaluated up to the close: never finalize them blind.
+    expired = tuple(expire_due_orders(engine, now=market_now, exclude_feeds=tuple(cycle.ingest_failures)))
     quality = run_session_quality(engine, session_day=session_day, reference=reference, code_version=code_version,
                                   market_now=market_now)
     return EndOfDayReport(cycle, expired, quality)

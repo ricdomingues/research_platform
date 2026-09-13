@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from types import ModuleType
 from uuid import UUID
 
@@ -14,7 +15,7 @@ from core.domain.calendar import ONE_MINUTE
 from core.domain.models import Bar, OrderContext, OrderStatus, StepResult
 from core.fills import get_fill_model
 from virtual_orders.evaluator.context import load_order_context
-from virtual_orders.evaluator.outcomes import OrderOutcome
+from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.errors import PROCESSED_BAR_MISSING, PROJECTION_MISSING, LedgerIntegrityError
 from virtual_orders.ledger.orders import OrderRow, Projection, SignalRow, load_projection, lock_order
 from virtual_orders.ledger.quarantine import run_guarded
@@ -104,15 +105,28 @@ def flag_order_review(engine: Engine, order_id: UUID, *, reason: str, ref: str) 
 
 _DUE_ORDERS = text(
     """
-    SELECT o.id FROM orders o JOIN order_state st ON st.order_id = o.id
-    WHERE NOT o.replay AND NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')
+    SELECT o.id AS order_id, o.price_source AS price_source, g.ticker AS ticker
+    FROM orders o LEFT JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
+    WHERE NOT o.replay
+      AND (st.order_id IS NULL OR (NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')))
       AND o.valid_until_ts <= :now
     ORDER BY o.valid_until_ts, o.id
     """
 )
 
 
-def expire_due_orders(engine: Engine, *, now: datetime) -> list[OrderOutcome]:
+def expire_due_orders(engine: Engine, *, now: datetime, exclude_feeds: Collection[str] = ()) -> list[OrderOutcome]:
+    """Finalizes every due order, one isolated command per order.
+
+    `exclude_feeds` holds `"{price_source}:{ticker}"` keys whose data could not be ingested in the
+    calling cycle: those orders are left for a later call instead of being finalized without data.
+    Projection-less orders are selected on purpose so they surface as `PROJECTION_MISSING` incidents.
+    """
+    excluded = set(exclude_feeds)
     with engine.connect() as conn:
-        order_ids = list(conn.execute(_DUE_ORDERS, {"now": now}).scalars())
-    return [finalize_validity(engine, order_id, now=now) for order_id in order_ids]
+        rows = conn.execute(_DUE_ORDERS, {"now": now}).all()
+    return [
+        isolated(row.order_id, partial(finalize_validity, engine, row.order_id, now=now))
+        for row in rows
+        if f"{row.price_source}:{row.ticker}" not in excluded
+    ]

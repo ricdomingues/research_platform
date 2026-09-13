@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from functools import partial
 from uuid import UUID
 
 from sqlalchemy import Engine, func, select, text
@@ -14,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from core.dataquality import dividends_agree
 from core.domain.models import StepResult
 from virtual_orders.evaluator.commands import CommandInput, apply_command, freeze_order
-from virtual_orders.evaluator.outcomes import OrderOutcome
+from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.events import known_hashes
 from virtual_orders.ledger.runs import last_segment_end
 from virtual_orders.marketdata.calendars import calendar_for_window
@@ -30,8 +31,10 @@ from virtual_orders.storage.tables import dividends
 _CANDIDATE_ORDERS = text(
     """
     SELECT o.id AS order_id, g.ticker AS ticker
-    FROM orders o JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
-    WHERE NOT o.replay AND NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')
+    FROM orders o LEFT JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
+    WHERE NOT o.replay
+      AND (st.order_id IS NULL OR (NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')))
+      AND o.evaluation_start_ts < :ex_date_open
     ORDER BY g.ticker, o.id
     """
 )
@@ -39,8 +42,8 @@ _CANDIDATE_ORDERS = text(
 _NON_FINAL = text(
     """
     SELECT o.id AS order_id, g.ticker AS ticker, o.evaluation_start_ts AS evaluation_start_ts
-    FROM orders o JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
-    WHERE NOT o.replay AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')
+    FROM orders o LEFT JOIN order_state st ON st.order_id = o.id JOIN signals g ON g.id = o.signal_id
+    WHERE NOT o.replay AND (st.order_id IS NULL OR st.status IN ('PENDING', 'OPEN', 'PARTIAL'))
     ORDER BY g.ticker, o.id
     """
 )
@@ -115,7 +118,8 @@ def apply_dividends(
 
     with engine.connect() as conn:
         by_ticker: dict[str, list[UUID]] = defaultdict(list)
-        for row in conn.execute(_CANDIDATE_ORDERS):
+        # An order whose evaluation starts at or after the ex-date open can never hold a position on the ex-date.
+        for row in conn.execute(_CANDIDATE_ORDERS, {"ex_date_open": session.open_utc}):
             by_ticker[row.ticker].append(row.order_id)
 
     outcomes: list[OrderOutcome] = []
@@ -146,7 +150,9 @@ def apply_dividends(
                 .where(dividends.c.ticker == ticker, dividends.c.ex_date == ex_date)
             ).one()
         command = _dividend_command(ex_date, stored.amount, stored.validated, tolerance, position_confirmed_by)
-        outcomes.extend(apply_command(engine, order_id, command) for order_id in order_ids)
+        outcomes.extend(
+            isolated(order_id, partial(apply_command, engine, order_id, command)) for order_id in order_ids
+        )
     return outcomes
 
 
@@ -162,5 +168,6 @@ def freeze_for_splits(engine: Engine, split_source: SplitSource, *, as_of_day: d
         order_start = row.evaluation_start_ts.astimezone(UTC).date()
         for split in sorted(splits, key=lambda s: s.ex_date):
             if split.ticker == row.ticker and order_start <= split.ex_date <= as_of_day:
-                outcomes.append(freeze_order(engine, row.order_id, reason="SPLIT", ref=split.ex_date.isoformat()))
+                freeze = partial(freeze_order, engine, row.order_id, reason="SPLIT", ref=split.ex_date.isoformat())
+                outcomes.append(isolated(row.order_id, freeze))
     return outcomes

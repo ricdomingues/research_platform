@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -14,7 +14,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.domain.models import Direction, FillConfig, OrderState, Origin, SignalSpec
 from core.domain.position import excursion_r, r_multiple
-from virtual_orders.ledger.errors import OrderNotFound, SignalNotFound
+from virtual_orders.ledger.errors import (
+    PROJECTION_INTEGRITY_ERROR,
+    LedgerIntegrityError,
+    OrderNotFound,
+    SignalNotFound,
+)
 from virtual_orders.storage.codec import (
     config_from_snapshot,
     config_to_snapshot,
@@ -169,7 +174,14 @@ def load_projection(conn: Connection, order_id: UUID) -> Projection | None:
     ).first()
     if row is None:
         return None
-    return Projection(state_from_document(row.state_document), row.next_seq)
+    try:
+        state = state_from_document(row.state_document)
+    except (ValueError, TypeError, KeyError, InvalidOperation) as exc:
+        raise LedgerIntegrityError(
+            PROJECTION_INTEGRITY_ERROR, "stored projection cannot be decoded", order_id=order_id,
+            detail={"error": repr(exc)},
+        ) from exc
+    return Projection(state, row.next_seq)
 
 
 _QUALITY_TOTALS = text(

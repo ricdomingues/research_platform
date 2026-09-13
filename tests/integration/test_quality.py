@@ -8,6 +8,7 @@ from sqlalchemy import text
 from tests.integration.support import (
     CODE_VERSION,
     DAY,
+    PRICE_SOURCE,
     TICKER,
     FakeBarSource,
     FakeReference,
@@ -18,9 +19,11 @@ from tests.integration.support import (
     submit_default,
 )
 from tests.support import bar, et
+from virtual_orders.evaluator import commands as commands_module
 from virtual_orders.evaluator.quality import run_end_of_day, run_session_quality, session_for_day
 from virtual_orders.evaluator.rebuild import rebuild_projection
 from virtual_orders.ledger import errors
+from virtual_orders.ledger.errors import LedgerIntegrityError
 from virtual_orders.ledger.events import stored_events
 from virtual_orders.ledger.orders import delete_projection, read_projection_row
 from virtual_orders.ledger.runs import RunStatus, latest_run_status
@@ -118,6 +121,51 @@ def test_end_of_day_expires_pending_order_without_last_bar(engine):
     assert [(o.order_id, o.event_keys) for o in report.expired] == [(order_id, ("EXPIRED",))]
     (quality,) = [e for e in events(engine, order_id) if e.type == "DATA_QUALITY"]
     assert (quality.payload["expected_bars"], quality.payload["missing_bars"]) == (390, 1)
+
+
+def test_integrity_error_while_expiring_one_order_still_writes_quality(engine, monkeypatch):
+    broken_id = submit_default(engine, valid_sessions=1).auto_order_id
+    healthy_id = submit_default(engine, client_signal_id="rex-2025-11-25-aapl-2", valid_sessions=1).auto_order_id
+    original = commands_module.finalize_validity
+
+    def failing(engine_, order_id, *, now):
+        if order_id == broken_id:
+            raise LedgerIntegrityError(errors.CALENDAR_MISMATCH, "x", order_id=order_id)
+        return original(engine_, order_id, now=now)
+
+    monkeypatch.setattr(commands_module, "finalize_validity", failing)
+    report = end_of_day(engine, FakeBarSource(flat_raw(DAY, "09:30", "15:59", 105)))
+    expired = {o.order_id: o for o in report.expired}
+    assert expired[broken_id].error == errors.CALENDAR_MISMATCH
+    assert expired[healthy_id].event_keys == ("EXPIRED",)
+    assert report.quality is not None
+    for order_id in (broken_id, healthy_id):
+        assert [e.event_key for e in events(engine, order_id) if e.type == "DATA_QUALITY"] == [
+            "DATA_QUALITY:2025-11-25"
+        ]
+
+
+def test_end_of_day_does_not_expire_an_order_whose_feed_failed(engine):
+    order_id = submit_default(engine, valid_sessions=1).auto_order_id
+    source = FakeBarSource(flat_raw(DAY, "09:30", "16:00", 105))
+    source.failing.add(TICKER)
+    first = end_of_day(engine, source)
+    assert f"{PRICE_SOURCE}:{TICKER}" in first.cycle.ingest_failures
+    assert first.expired == ()
+    with engine.connect() as conn:
+        assert read_projection_row(conn, order_id)["status"] == "PENDING"
+
+    source.failing.clear()
+    second = run_end_of_day(engine, gateway=feeds(source), reference=FakeReference(), session_day=SESSION,
+                            code_version=CODE_VERSION, market_now=et(DAY, "16:45"))
+    assert second.cycle.ingest_failures == {}
+    # With data restored the cycle evaluates through the close and the fill model itself applies the validity end,
+    # so the order is expired with its bars and there is nothing left for `expire_due_orders`.
+    assert [(o.order_id, o.event_keys) for o in second.cycle.outcomes] == [(order_id, ("EXPIRED",))]
+    assert second.expired == ()
+    with engine.connect() as conn:
+        row = read_projection_row(conn, order_id)
+    assert row["status"] == "EXPIRED" and row["last_bar_ts"] == et(DAY, "15:59")
 
 
 def test_rebuild_accepts_quality_records_and_review_commands(engine):

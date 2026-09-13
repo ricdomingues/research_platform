@@ -13,6 +13,7 @@ from tests.integration.support import (
     FakeBarSource,
     FakeDividends,
     FakeSplits,
+    count,
     dividend,
     feeds,
     flat_raw,
@@ -26,8 +27,9 @@ from virtual_orders.evaluator.corporate import apply_dividends, freeze_for_split
 from virtual_orders.evaluator.cycle import run_live_cycle
 from virtual_orders.evaluator.rebuild import rebuild_projection
 from virtual_orders.evaluator.signals import submit_signal
+from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import stored_events
-from virtual_orders.ledger.orders import delete_projection, read_projection_row
+from virtual_orders.ledger.orders import delete_projection, get_order, read_projection_row
 from virtual_orders.marketdata.sources import SplitRecord
 from virtual_orders.storage import tables
 
@@ -146,6 +148,20 @@ def test_position_not_evaluated_through_the_prior_close_flags_review_without_cre
     assert row["r_multiple"] == 0 and row["needs_review"]
 
 
+def test_order_evaluated_from_the_ex_date_open_is_not_a_dividend_candidate(engine):
+    open_id = open_confirmed(engine)
+    late = submit_signal(
+        engine, signal_body(client_signal_id="after-close"), config=FillConfig(),
+        code_version=CODE_VERSION, price_source=PRICE_SOURCE, now=et(DAY, "16:30"),
+    )
+    with engine.connect() as conn:
+        assert get_order(conn, late.auto_order_id).evaluation_start_ts == et(EX_DAY, "09:30")
+    fmp = FakeDividends("fmp", [dividend("AAPL", EX_DAY, "0.26")])
+    yfinance = FakeDividends("yfinance", [dividend("AAPL", EX_DAY, "0.26")])
+    assert [o.order_id for o in pay(engine, fmp, yfinance)] == [open_id]
+    assert keys(engine, late.auto_order_id) == ["ORDER_CREATED"]
+
+
 def test_pending_orders_and_unrelated_tickers_are_untouched(engine):
     open_id = open_confirmed(engine)
     pending_id = submit_default(engine, client_signal_id="pending", ticker="MSFT").auto_order_id
@@ -206,3 +222,15 @@ def test_split_freezes_every_non_final_order_of_the_ticker(engine):
     report = run_live_cycle(engine, feeds(FakeBarSource(scenario_bars())), code_version=CODE_VERSION,
                             market_now=et(DAY, "11:30"))
     assert {o.order_id for o in report.outcomes} == {other_id}
+
+
+def test_split_quarantines_projection_less_order_without_stopping_others(engine):
+    broken_id = open_mid_session(engine)
+    healthy_id = submit_default(engine, client_signal_id="pending-aapl").auto_order_id
+    with engine.begin() as conn:
+        delete_projection(conn, broken_id)
+    splits = FakeSplits([SplitRecord("AAPL", date(2025, 11, 26), Decimal(1), Decimal(4))])
+    outcomes = {o.order_id: o for o in freeze_for_splits(engine, splits, as_of_day=date(2025, 11, 26))}
+    assert outcomes[broken_id].error == errors.PROJECTION_MISSING
+    assert outcomes[healthy_id].event_keys == ("FROZEN:SPLIT", "NEEDS_REVIEW:SPLIT:2025-11-26")
+    assert count(engine, "integrity_incidents") == 1
