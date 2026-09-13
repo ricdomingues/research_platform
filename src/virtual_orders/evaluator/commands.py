@@ -31,6 +31,14 @@ class OrderAlreadyFinal(Exception):
         self.order_id = order_id
 
 
+class ReplayOrderReadOnly(Exception):
+    """Replay orders are derived history (spec 3.6): no command may append to them (D15)."""
+
+    def __init__(self, order_id: UUID) -> None:
+        super().__init__(f"order {order_id} is a replay and accepts no commands")
+        self.order_id = order_id
+
+
 @dataclass(frozen=True)
 class CommandInput:
     conn: Connection
@@ -45,6 +53,8 @@ def apply_command(engine: Engine, order_id: UUID, command: Callable[[CommandInpu
     def operation() -> OrderOutcome:
         with engine.begin() as conn:
             order = lock_order(conn, order_id)
+            if order.replay:
+                raise ReplayOrderReadOnly(order_id)
             projection = load_projection(conn, order_id)
             if projection is None:
                 raise LedgerIntegrityError(PROJECTION_MISSING, "order_state missing", order_id=order_id)
