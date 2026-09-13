@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 import httpx
+from fastapi import FastAPI
 from sqlalchemy import Engine
 
-from virtual_orders.config import ConfigError, Settings
+from virtual_orders.api.app import create_app
+from virtual_orders.config import ConfigError, Settings, load_settings
 from virtual_orders.marketdata.alpaca import AlpacaAssets, AlpacaBars, AlpacaSplits
 from virtual_orders.marketdata.fmp import FmpDividends
 from virtual_orders.marketdata.gateway import MarketDataGateway
@@ -68,3 +71,8 @@ def build_services(
         clock=clock or _utc_now,
         close=close,
     )
+
+
+def app_from_environment() -> FastAPI:
+    """ASGI factory: `uvicorn virtual_orders.bootstrap:app_from_environment --factory`."""
+    return create_app(build_services(load_settings(os.environ)))

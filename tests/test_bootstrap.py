@@ -7,7 +7,7 @@ import pytest
 from core.domain.models import FillConfig
 from tests.config_support import BASE_ENV
 from virtual_orders.bootstrap import build_services
-from virtual_orders.config import DEFAULT_PRICE_SOURCE, ConfigError, load_settings
+from virtual_orders.config import DEFAULT_PRICE_SOURCE, ENV_VARIABLES, ConfigError, load_settings
 from virtual_orders.marketdata.alpaca import ALPACA_IEX_SOURCE, AlpacaAssets, AlpacaBars, AlpacaSplits
 from virtual_orders.marketdata.fmp import FmpDividends
 from virtual_orders.marketdata.gateway import UnknownDataSource
@@ -64,3 +64,17 @@ def test_services_repr_hides_the_api_key():
         assert "very-secret" not in repr(services)
     finally:
         services.close()
+
+
+def test_app_factory_builds_from_the_environment(monkeypatch):
+    from fastapi import FastAPI
+
+    from virtual_orders.bootstrap import app_from_environment
+
+    for name in ENV_VARIABLES:  # the host shell must neither break nor silently change this test
+        monkeypatch.delenv(name, raising=False)
+    for name, value in BASE_ENV.items():
+        monkeypatch.setenv(name, value)
+    app = app_from_environment()
+    assert isinstance(app, FastAPI)
+    app.state.services.close()
