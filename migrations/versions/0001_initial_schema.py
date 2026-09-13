@@ -166,6 +166,7 @@ CREATE TABLE evaluation_run_status (
   recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   detail jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE INDEX evaluation_run_status_run_idx ON evaluation_run_status (run_id, id DESC);
 
 CREATE TABLE order_eval_segments (
   order_id uuid NOT NULL REFERENCES orders(id),
