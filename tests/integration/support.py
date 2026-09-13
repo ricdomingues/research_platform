@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Engine, func, select
 
-from core.domain.models import FillConfig
+from core.domain.models import Bar, FillConfig
 from tests.support import et
 from virtual_orders.evaluator.signals import SignalSubmission, submit_signal
 from virtual_orders.marketdata.calendars import calendar_for_window
@@ -164,3 +164,27 @@ class FakeSplits:
     def fetch_splits(self, tickers: Sequence[str], start: date, end: date) -> list[SplitRecord]:
         self.calls.append((tuple(tickers), start, end))
         return [r for r in self.records if r.ticker in tickers and start <= r.ex_date <= end]
+
+
+class FakeReference:
+    """yfinance stand-in: minute[(ticker, day)] -> {ts: Bar}; daily[(ticker, day)] -> (high, low)."""
+
+    def __init__(
+        self,
+        minute: dict[tuple[str, date], dict[datetime, Bar]] | None = None,
+        daily: dict[tuple[str, date], tuple[Decimal, Decimal]] | None = None,
+        failing: bool = False,
+    ) -> None:
+        self.minute = minute or {}
+        self.daily = daily or {}
+        self.failing = failing
+
+    def fetch_minute_bars(self, ticker: str, day: date) -> dict[datetime, Bar]:
+        if self.failing:
+            raise SourceUnavailable("yfinance unavailable (fake)")
+        return dict(self.minute.get((ticker, day), {}))
+
+    def fetch_daily_range(self, ticker: str, day: date) -> tuple[Decimal, Decimal] | None:
+        if self.failing:
+            raise SourceUnavailable("yfinance unavailable (fake)")
+        return self.daily.get((ticker, day))
