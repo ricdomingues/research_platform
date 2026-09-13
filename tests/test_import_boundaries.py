@@ -1,6 +1,7 @@
 """Import boundaries: frozen pure core, and provider-neutral infrastructure (Plan 2 Global Constraints)."""
 
 import ast
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,9 @@ IO_LIBRARIES = (
 )
 CORE_ALLOWED = {"core/marketdata/nyse_calendar.py": {"pandas_market_calendars"}}
 
-NEUTRAL_PACKAGES = ["virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator"]
+NEUTRAL_PACKAGES = [
+    "virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator", "virtual_orders/readmodels",
+]
 NEUTRAL_MARKETDATA = [
     "virtual_orders/marketdata/sources.py", "virtual_orders/marketdata/gateway.py",
     "virtual_orders/marketdata/calendars.py", "virtual_orders/marketdata/asof.py",
@@ -26,6 +29,16 @@ PROVIDER_ADAPTERS = (
     "virtual_orders.marketdata.yfinance_source", "virtual_orders.marketdata.http",
 )
 PROVIDER_LIBRARIES = ("httpx", "yfinance", "pandas")
+
+COMPOSITION_ROOT = "virtual_orders/bootstrap.py"
+ADAPTER_FILES = frozenset({
+    "virtual_orders/marketdata/alpaca.py", "virtual_orders/marketdata/fmp.py",
+    "virtual_orders/marketdata/yfinance_source.py", "virtual_orders/marketdata/http.py",
+})
+APPLICATION_LAYER = (
+    "virtual_orders.api", "virtual_orders.bootstrap", "virtual_orders.config", "fastapi", "starlette", "uvicorn",
+)
+APPLICATION_NEUTRAL = ("virtual_orders/services.py", "virtual_orders/config.py")
 
 
 def _rel(path: Path) -> str:
@@ -49,6 +62,14 @@ def _neutral_files() -> list[Path]:
         if (SRC / package).exists():
             files.extend(sorted((SRC / package).rglob("*.py")))
     return files
+
+
+def _platform_files() -> list[Path]:
+    return sorted((SRC / "virtual_orders").rglob("*.py"))
+
+
+def _api_files() -> list[Path]:
+    return sorted((SRC / "virtual_orders/api").rglob("*.py"))
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -107,3 +128,36 @@ def test_boundary_scan_covers_the_platform_packages() -> None:
     } <= neutral
     for adapter in ("alpaca.py", "fmp.py", "yfinance_source.py", "http.py"):
         assert (SRC / "virtual_orders/marketdata" / adapter).exists()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [p for p in _platform_files() if _rel(p) not in ADAPTER_FILES | {COMPOSITION_ROOT}],
+    ids=_rel,
+)
+def test_only_the_composition_root_imports_provider_adapters(path: Path) -> None:
+    assert _offending(path, PROVIDER_ADAPTERS) == []
+
+
+@pytest.mark.parametrize("path", _api_files(), ids=_rel)
+def test_api_never_imports_adapters_provider_libraries_or_the_composition_root(path: Path) -> None:
+    assert _offending(path, PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + ("virtual_orders.bootstrap",)) == []
+
+
+@pytest.mark.parametrize("path", _neutral_files(), ids=_rel)
+def test_neutral_infrastructure_never_imports_the_application_layer(path: Path) -> None:
+    assert _offending(path, APPLICATION_LAYER) == []
+
+
+@pytest.mark.parametrize(
+    "path", [SRC / relative for relative in APPLICATION_NEUTRAL if (SRC / relative).exists()], ids=_rel
+)
+def test_services_and_config_never_import_adapters_or_provider_libraries(path: Path) -> None:
+    assert _offending(path, PROVIDER_ADAPTERS + PROVIDER_LIBRARIES) == []
+
+
+def test_boundary_scan_covers_the_application_layer() -> None:
+    assert "virtual_orders/api/__init__.py" in {_rel(p) for p in _api_files()}
+    assert "virtual_orders/readmodels/__init__.py" in {_rel(p) for p in _neutral_files()}
+    assert importlib.util.find_spec("fastapi") is not None
+    assert importlib.util.find_spec("uvicorn") is not None
