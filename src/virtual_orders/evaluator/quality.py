@@ -22,6 +22,7 @@ from core.dataquality import (
 )
 from core.domain.calendar import Session
 from core.domain.models import Bar, Event, EventType, StepResult
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.commands import CommandInput, apply_command, expire_due_orders
 from virtual_orders.evaluator.cycle import CycleReport, run_live_cycle
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated, split_errors
@@ -151,8 +152,8 @@ def run_session_quality(
     market_now: datetime | None = None,
     unavailable_feeds: Collection[str] = (),
 ) -> QualityReport:
+    now = require_aware(market_now, "market_now") if market_now is not None else datetime.now(UTC)
     session = session_for_day(session_day)
-    now = (market_now or datetime.now(UTC)).astimezone(UTC)
     _require_just_closed(session, now)  # validated before any run row is created
 
     data_as_of = acquire_data_as_of(engine)
@@ -212,6 +213,7 @@ def run_end_of_day(
     code_version: str,
     market_now: datetime,
 ) -> EndOfDayReport:
+    market_now = require_aware(market_now, "market_now")
     cycle = run_live_cycle(engine, gateway, code_version=code_version, market_now=market_now,
                            close_trailing_gap=True)
     if cycle.skipped:

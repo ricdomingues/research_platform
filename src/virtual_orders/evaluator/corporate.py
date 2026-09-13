@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.dataquality import dividends_agree
 from core.domain.models import StepResult
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.commands import CommandInput, apply_command, freeze_order
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.events import known_hashes
@@ -102,6 +103,7 @@ def apply_dividends(
     tolerance: Decimal,
     now: datetime,
 ) -> list[OrderOutcome]:
+    now = require_aware(now, "now")
     probe = datetime.combine(ex_date, time(12), tzinfo=UTC)
     sessions = calendar_for_window(probe, probe).sessions
     index = next((i for i, s in enumerate(sessions) if s.day == ex_date), None)

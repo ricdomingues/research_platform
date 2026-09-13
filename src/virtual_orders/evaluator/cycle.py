@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import Connection, Engine, text
 
 from core.fills import get_fill_model
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.context import load_order_context
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated, split_errors
 from virtual_orders.ledger.errors import PROJECTION_MISSING, LedgerIntegrityError
@@ -139,8 +140,9 @@ def run_live_cycle(
     market_now: datetime | None = None,
     close_trailing_gap: bool = False,
 ) -> CycleReport:
+    now = require_aware(market_now, "market_now") if market_now is not None else None
     started = datetime.now(UTC)
-    now = (market_now or started).astimezone(UTC)
+    now = now or started
     lock_conn = engine.connect()
     try:
         if not try_cycle_lock(lock_conn):

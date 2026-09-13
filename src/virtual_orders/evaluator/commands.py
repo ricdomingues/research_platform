@@ -14,6 +14,7 @@ from sqlalchemy import Connection, Engine, text
 from core.domain.calendar import ONE_MINUTE
 from core.domain.models import Bar, OrderContext, OrderStatus, StepResult
 from core.fills import get_fill_model
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.context import load_order_context
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.errors import PROCESSED_BAR_MISSING, PROJECTION_MISSING, LedgerIntegrityError
@@ -72,7 +73,7 @@ def processed_bar(conn: Connection, order: OrderRow, ticker: str, ts: datetime) 
 def cancel_order(
     engine: Engine, order_id: UUID, *, at: datetime | None = None, requested_by: str = "user"
 ) -> OrderOutcome:
-    moment = (at or datetime.now(UTC)).astimezone(UTC)
+    moment = require_aware(at, "at") if at is not None else datetime.now(UTC)
 
     def command(inp: CommandInput) -> StepResult:
         if inp.projection.state.is_final:
