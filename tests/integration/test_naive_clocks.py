@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
@@ -59,6 +60,12 @@ def test_manual_order_rejects_naive_created_at(engine):
         create_manual_order(engine, signal_id, config=FillConfig(), code_version=CODE_VERSION,
                             price_source=PRICE_SOURCE, created_at=NAIVE)
     assert count(engine, "evaluation_runs") == 0
+
+
+def test_manual_order_rejects_naive_created_at_before_signal_lookup(engine):
+    with pytest.raises(ValueError, match="created_at must be timezone-aware"):
+        create_manual_order(engine, uuid4(), config=FillConfig(), code_version=CODE_VERSION,
+                            price_source=PRICE_SOURCE, created_at=NAIVE)
 
 
 def test_cancel_rejects_naive_at(engine):

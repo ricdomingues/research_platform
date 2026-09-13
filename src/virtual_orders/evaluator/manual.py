@@ -141,11 +141,11 @@ def create_manual_order(
     gateway: MarketDataGateway | None = None,
     coverage_policy: CoveragePolicy = STRICT_PRIMARY_COVERAGE,
 ) -> ManualOrderCreated:
-    with engine.connect() as conn:
-        signal = get_signal(conn, signal_id)
     # T is the click, captured once (spec 3.4.1): used unchanged for both the ingest window ceiling and the
     # decision, so a fetch that straddles a minute boundary can never move T or spuriously fail actionability.
     decided_at = require_aware(created_at, "created_at") if created_at is not None else datetime.now(UTC)
+    with engine.connect() as conn:
+        signal = get_signal(conn, signal_id)
     expired = decided_at >= signal.valid_until_ts
     ingest_error: str | None = None
     if gateway is not None and not expired:
