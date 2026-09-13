@@ -11,6 +11,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.100",
+    "ruff==0.8.6",
+    "mypy==1.13.0",
+    "pandas-stubs>=3.0.5.260730",
 ]
 
 [build-system]
@@ -24,3 +27,53 @@ packages = ["src/core"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src", "."]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "virtual_orders", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Baseline do Plano 1 (congelado em deec356): silenciado, nunca corrigido.
+"src/core/actionability.py" = ["I001", "UP035", "UP017"]
+"src/core/dataquality.py" = ["I001", "UP035"]
+"src/core/domain/calendar.py" = ["UP035", "UP017", "B905"]
+"src/core/domain/hashing.py" = ["UP038", "UP017"]
+"src/core/domain/models.py" = ["UP017"]
+"src/core/fills/v1/engine.py" = ["UP035"]
+"src/core/marketdata/nyse_calendar.py" = ["UP017"]
+"src/core/metrics/resampling.py" = ["UP035"]
+"src/core/metrics/summary.py" = ["I001", "UP035"]
+"tests/domain/test_hashing.py" = ["UP017"]
+"tests/domain/test_models.py" = ["UP017"]
+"tests/fills/test_entry.py" = ["I001", "B011", "UP017"]
+"tests/fills/test_exits.py" = ["I001"]
+"tests/fills/test_lifecycle.py" = ["I001"]
+"tests/fills/test_properties.py" = ["I001", "B905", "B904"]
+"tests/metrics/test_resampling.py" = ["I001"]
+"tests/metrics/test_summary.py" = ["I001"]
+"tests/test_actionability.py" = ["I001"]
+"tests/test_dataquality.py" = ["I001"]
+"tests/support.py" = ["UP017", "E402", "E741"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["core"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+# Baseline do Plano 1: 6 erros de Optional em engine.py (inalcançáveis por caminhos validados).
+module = "core.fills.v1.engine"
+disable_error_code = ["operator", "type-var", "arg-type", "assignment"]
+
+[[tool.mypy.overrides]]
+module = ["pandas_market_calendars", "pandas_market_calendars.*", "yfinance", "yfinance.*"]
+ignore_missing_imports = true
