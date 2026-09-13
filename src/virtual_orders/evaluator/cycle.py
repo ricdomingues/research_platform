@@ -42,10 +42,10 @@ _OPEN_ORDERS = text(
     SELECT o.id AS order_id, o.price_source AS price_source, g.ticker AS ticker,
            COALESCE(MAX(s.bar_to) + interval '1 minute', o.evaluation_start_ts) AS resume_from
     FROM orders o
-    JOIN order_state st ON st.order_id = o.id
+    LEFT JOIN order_state st ON st.order_id = o.id
     JOIN signals g ON g.id = o.signal_id
     LEFT JOIN order_eval_segments s ON s.order_id = o.id
-    WHERE NOT o.replay AND NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')
+    WHERE NOT o.replay AND (st.order_id IS NULL OR (NOT st.frozen AND st.status IN ('PENDING', 'OPEN', 'PARTIAL')))
     GROUP BY o.id, o.price_source, g.ticker, o.evaluation_start_ts
     ORDER BY o.price_source, g.ticker, o.id
     """

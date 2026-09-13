@@ -189,6 +189,18 @@ def test_missing_projection_is_an_integrity_error(engine):
     assert count(engine, "integrity_incidents") == 1
 
 
+def test_missing_projection_is_quarantined_during_a_whole_cycle(engine):
+    bad_id = submit_default(engine).auto_order_id
+    good_id = submit_default(engine, client_signal_id="msft", ticker="MSFT").auto_order_id
+    with engine.begin() as conn:
+        delete_projection(conn, bad_id)
+    source = FakeBarSource(scenario_bars() + scenario_bars(ticker="MSFT"))
+    outcomes = {o.order_id: o for o in cycle(engine, source, "10:30").outcomes}
+    assert outcomes[bad_id].error == errors.PROJECTION_MISSING
+    assert outcomes[good_id].event_keys == ("FILLED",)
+    assert count(engine, "integrity_incidents") == 1
+
+
 def test_bars_are_read_as_of_the_run_watermark(engine):
     order_id = submit_default(engine).auto_order_id
     source = FakeBarSource(scenario_bars())
