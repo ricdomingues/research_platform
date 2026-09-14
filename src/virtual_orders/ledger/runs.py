@@ -21,6 +21,8 @@ class RunKind(StrEnum):
     ACTIONABILITY = "ACTIONABILITY"
     END_OF_DAY = "END_OF_DAY"
     OPENING = "OPENING"
+    QUALITY_RECHECK = "QUALITY_RECHECK"
+    WATCHLIST = "WATCHLIST"
 
 
 class RunStatus(StrEnum):
