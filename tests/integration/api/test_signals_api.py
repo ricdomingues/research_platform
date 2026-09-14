@@ -22,7 +22,8 @@ def test_every_route_rejects_a_missing_or_wrong_key(api):
         assert isinstance(ctx.route, APIRoute), ctx.route  # a future Mount/WebSocket route must not slip past this
     routes = [ctx.route for ctx in contexts]
     for route in routes:
-        path = route.path.replace("{signal_id}", str(uuid4())).replace("{order_id}", str(uuid4()))
+        path = (route.path.replace("{signal_id}", str(uuid4())).replace("{order_id}", str(uuid4()))
+                .replace("{rule_id}", str(uuid4())).replace("{ticker}", "AAPL"))
         for method in route.methods:
             for headers in ({}, {"X-API-Key": "wrong"}):
                 response = anonymous.request(method, path, headers=headers)
