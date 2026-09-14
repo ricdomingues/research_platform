@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {
+      "cause_codes": [
+        "LIVE_CYCLE_STALE"
+      ],
+      "id": 1,
+      "observed_at": "2026-09-14T17:45:23.207439+00:00",
+      "state": "DEGRADED"
+    }
+  ]
+}

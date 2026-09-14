@@ -1,0 +1,67 @@
+{
+  "config_snapshot": {
+    "commission_per_execution": "0",
+    "crosscheck_tolerance_pct": "0.5",
+    "data_gap_minutes": 30,
+    "dividend_tolerance": "0.001",
+    "entry_slippage_bps": "0",
+    "risk_amount": "100",
+    "sec_fee_rate": "0",
+    "sec_taf_fees_enabled": false,
+    "stop_slippage_bps": "5",
+    "taf_fee_max": "0",
+    "taf_fee_per_share": "0",
+    "target1_scale_out_pct": "50",
+    "zone_lost_policy": "RECLAIM"
+  },
+  "direction": "LONG",
+  "evaluation_start_ts": "2025-11-25T14:30:00+00:00",
+  "fill_model_version": "v1",
+  "levels": {
+    "avg_entry": "101",
+    "entry_zone_high": "102",
+    "entry_zone_low": "100",
+    "stop": "97",
+    "stop_current": "101",
+    "target1": "106",
+    "target2": "110",
+    "trigger_price": null
+  },
+  "markers": [
+    {
+      "event_key": "FILLED",
+      "price": "101",
+      "seq": 2,
+      "ts": "2025-11-25T15:05:00+00:00",
+      "type": "FILLED"
+    },
+    {
+      "event_key": "TARGET1_HIT",
+      "price": "106",
+      "seq": 3,
+      "ts": "2025-11-25T16:00:00+00:00",
+      "type": "TARGET1_HIT"
+    },
+    {
+      "event_key": "TARGET2_HIT",
+      "price": "110",
+      "seq": 4,
+      "ts": "2025-11-25T17:50:00+00:00",
+      "type": "TARGET2_HIT"
+    }
+  ],
+  "order_id": "45d9621a-49a8-4572-9625-64281d70fff8",
+  "origin": "AUTO_STRATEGY",
+  "price_source": "fake_feed",
+  "replay": false,
+  "replay_of_order_id": null,
+  "status": "CLOSED",
+  "strategy": "REXSHARE",
+  "ticker": "AAPL",
+  "valid_until_ts": "2025-11-28T18:00:00+00:00",
+  "window": {
+    "from": "2025-11-25T05:00:00+00:00",
+    "to": "2025-11-25T17:51:00+00:00"
+  },
+  "window_truncated": false
+}

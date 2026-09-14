@@ -1,0 +1,48 @@
+{
+  "from": null,
+  "group_by": null,
+  "groups": [
+    {
+      "key": null,
+      "summary": {
+        "avg_duration_seconds": 9900.0,
+        "avg_mae_r": -0.125,
+        "avg_mfe_r": 2.375,
+        "avg_r": 1.75,
+        "drawdown_sequence_risk": {
+          "p5": 0.0,
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "excluded_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "execution_rate": 1.0,
+        "expectancy_ci": [
+          1.75,
+          1.75
+        ],
+        "expectancy_r": 1.75,
+        "included_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "max_drawdown_r": 0.0,
+        "profit_factor": null,
+        "trades": 2,
+        "warnings": [
+          "INSUFFICIENT_SAMPLE"
+        ],
+        "win_rate": 1.0,
+        "win_rate_ci": [
+          1.0,
+          1.0
+        ]
+      }
+    }
+  ],
+  "include_needs_review": false,
+  "replay": false,
+  "to": null
+}

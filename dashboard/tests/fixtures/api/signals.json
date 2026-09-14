@@ -1,0 +1,26 @@
+{
+  "signals": [
+    {
+      "auto_order_id": "45d9621a-49a8-4572-9625-64281d70fff8",
+      "auto_order_status": "CLOSED",
+      "client_signal_id": "rex-2025-11-25-aapl",
+      "created_at": "2025-11-25T14:00:00+00:00",
+      "direction": "LONG",
+      "entry_zone_high": "102",
+      "entry_zone_low": "100",
+      "evaluation_start_ts": "2025-11-25T14:30:00+00:00",
+      "score": null,
+      "signal_id": "003015cd-ce7e-4a32-9dc7-ac5a085181eb",
+      "source": "test",
+      "stop": "97",
+      "strategy": "REXSHARE",
+      "strategy_version": "1.0",
+      "target1": "106",
+      "target2": "110",
+      "ticker": "AAPL",
+      "trigger_price": null,
+      "valid_sessions": 3,
+      "valid_until_ts": "2025-11-28T18:00:00+00:00"
+    }
+  ]
+}

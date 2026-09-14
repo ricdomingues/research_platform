@@ -1,0 +1,21 @@
+{
+  "watchlist": [
+    {
+      "added_at": "2025-11-26T21:30:00+00:00",
+      "rules": [
+        {
+          "cmf_threshold": null,
+          "cooldown_minutes": 30,
+          "created_at": "2025-11-26T21:30:00+00:00",
+          "direction": "ABOVE",
+          "id": "1d69db14-2ea5-4eb5-8b8c-43c295b75e19",
+          "kind": "PRICE_CROSS",
+          "level": "101.5",
+          "ticker": "MSFT",
+          "window_bars": null
+        }
+      ],
+      "ticker": "MSFT"
+    }
+  ]
+}
