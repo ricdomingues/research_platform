@@ -8,7 +8,7 @@ from tests.support import et
 from virtual_orders.storage.database import WORKER_LOCK_KEY
 from virtual_orders.worker import runner as runner_module
 from virtual_orders.worker.jobs import JobResult
-from virtual_orders.worker.runner import acquire_worker_lock, release_worker_lock, run_worker
+from virtual_orders.worker.runner import acquire_worker_lock, release_worker_lock, run_worker, worker_lock_held
 
 
 class FakeScheduler:
@@ -148,3 +148,15 @@ def test_a_lost_worker_lock_alerts_and_stops_the_scheduler(worker):
     ((key, document),) = worker.sink.sent
     assert key.startswith("WORKER_LOCK_LOST:") and document["kind"] == "WORKER_LOCK_LOST"
     assert_lock_is_free(engine)
+
+
+def test_a_live_connection_whose_lock_was_released_counts_as_lost(worker):
+    lock = acquire_worker_lock(worker.services.engine)
+    assert lock is not None
+    try:
+        assert worker_lock_held(lock) is True
+        lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
+        lock.commit()
+        assert worker_lock_held(lock) is False  # the session is alive, but the lock is gone (T16)
+    finally:
+        lock.close()
