@@ -161,3 +161,13 @@ def test_boundary_scan_covers_the_application_layer() -> None:
     assert "virtual_orders/readmodels/__init__.py" in {_rel(p) for p in _neutral_files()}
     assert importlib.util.find_spec("fastapi") is not None
     assert importlib.util.find_spec("uvicorn") is not None
+    api = {_rel(p) for p in _api_files()}
+    assert {
+        "virtual_orders/api/app.py", "virtual_orders/api/intake.py", "virtual_orders/api/routes/health.py",
+        "virtual_orders/api/routes/replay.py",
+    } <= api
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {"virtual_orders/readmodels/health.py", "virtual_orders/readmodels/metrics.py"} <= neutral
+    assert all((SRC / relative).exists() for relative in APPLICATION_NEUTRAL)
+    assert (SRC / COMPOSITION_ROOT).exists()
+    assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
