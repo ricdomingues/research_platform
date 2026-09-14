@@ -139,6 +139,54 @@ def test_reproduce_divergence_is_409_with_the_diff_per_order(api):
     assert entry["incident_id"] is not None and entry["reason"] and isinstance(entry["diff"], list)
 
 
+def test_reproduce_with_an_unknown_order_reports_not_found_alongside_the_created(api):
+    order_id = closed_order(api)
+    unknown = uuid4()
+    response = post_json(api.client, "/replay", {"mode": "REPRODUCE", "order_ids": [str(order_id), str(unknown)]})
+    assert response.status_code == 200
+    body = response.json()
+    assert list(body["created"]) == [str(order_id)]
+    assert body["failures"] == {str(unknown): "ORDER_NOT_FOUND"}
+
+
+def test_reproduce_divergence_keeps_the_not_found_failure_for_an_unknown_order(api):
+    """Same divergence setup as test_reproduce_divergence_is_409_with_the_diff_per_order, plus an unknown id."""
+    diverging = UUID(new_signal(api)["auto_order_id"])
+    identical = UUID(new_signal(api, client_signal_id="msft", ticker="MSFT")["auto_order_id"])
+    unknown = uuid4()
+    api.bars.load(scenario_bars())
+    api.bars.load(scenario_bars(ticker="MSFT"))
+    run_live_cycle(api.services.engine, api.services.gateway, code_version=CODE_VERSION, market_now=et(DAY, "10:30"))
+    with api.services.engine.connect() as conn:
+        run = get_run(conn, list_segments(conn, diverging)[0].run_id)
+    backdated_batch(api.services.engine, TICKER, [raw(DAY, "10:05", 104, 104, 104, 104)], run.data_as_of)
+
+    response = post_json(api.client, "/replay", {
+        "mode": "REPRODUCE", "order_ids": [str(diverging), str(identical), str(unknown)],
+    })
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "REPRODUCE_DIVERGED"
+    detail = error["detail"]
+    assert list(detail["diverged"]) == [str(diverging)]
+    assert detail["failures"] == {str(unknown): "ORDER_NOT_FOUND"}
+
+
+def test_rejected_recalculate_request_creates_no_evaluation_run(api):
+    order_id = closed_order(api)
+    before = count(api.services.engine, "evaluation_runs")
+
+    response = post_json(api.client, "/replay", {
+        "mode": "RECALCULATE", "order_ids": [str(order_id)],
+        "config_overrides": {"dividend_tolerance": Decimal("0.1")},
+    })
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "REPLAY_REQUEST_INVALID"
+    assert count(api.services.engine, "evaluation_runs") == before
+
+
 def test_recalculate_with_overrides(api):
     order_id = closed_order(api)
     response = post_json(api.client, "/replay", {
