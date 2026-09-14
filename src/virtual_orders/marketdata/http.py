@@ -15,6 +15,10 @@ from virtual_orders.marketdata.sources import SourceDataError, SourceUnavailable
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
+class ResourceNotFound(SourceUnavailable):
+    """HTTP 404: the provider answered that the requested resource does not exist."""
+
+
 def get_json(
     client: httpx.Client,
     url: str,
@@ -37,6 +41,8 @@ def get_json(
                     return json.loads(response.text, parse_float=Decimal)
                 except ValueError as exc:
                     raise SourceDataError(f"invalid JSON from {url}") from exc
+            if response.status_code == 404:
+                raise ResourceNotFound(f"{url} returned HTTP 404")
             if response.status_code not in RETRYABLE_STATUS:
                 raise SourceUnavailable(f"{url} returned HTTP {response.status_code}")
             last_error = f"HTTP {response.status_code}"

@@ -59,6 +59,13 @@ Saída da fase: relatório com o que existe, o que não existe e o que é incert
 - Negadas: place order, cancel order, modify order, options trade, crypto trade, equity trade, qualquer tool desconhecida.
 - Proibido passthrough do tipo `call_mcp_tool(tool_name_from_user_or_llm)`; cada tool permitida tem um método tipado próprio.
 
+## Uso aprovado pelo dono (2026-09-13): portfólio real no dashboard
+
+- O painel do Plano 3C mostra o portfólio **real** ao lado do portfólio virtual, lendo posições pela conta Robinhood em modo somente leitura.
+- **Pré-requisito:** a Fase 0 continua obrigatória. Os itens 1–4, 12, 14, 16 e 17 bloqueiam este uso; sem evidência, o painel mostra só o portfólio virtual.
+- **Allowlist:** a leitura de posições entra como uma tool de conta, com método tipado próprio (ex.: `list_positions()`). Nada de ordens, nada de passthrough.
+- **Isolamento:** o portfólio real é só exibição. Nunca alimenta o motor, o ledger, o fill ou as métricas, e nunca é misturado ao portfólio virtual num mesmo total sem rótulo.
+
 ## Indicadores prontos (RSI, MACD, …)
 
 Se oferecidos, podem ser ingeridos apenas para **cross-validation**. A fonte autoritativa da estratégia continua sendo o Technical Indicator Engine próprio, calculado sobre market data normalizado.

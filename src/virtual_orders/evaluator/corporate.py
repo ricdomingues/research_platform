@@ -13,7 +13,9 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.dataquality import dividends_agree
+from core.domain.calendar import Session
 from core.domain.models import StepResult
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.commands import CommandInput, apply_command, freeze_order
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.events import known_hashes
@@ -49,12 +51,32 @@ _NON_FINAL = text(
 )
 
 
-def _lookup(source: DividendSource, ticker: str, ex_date: date) -> DividendRecord | None:
+def _lookup(
+    source: DividendSource, ticker: str, ex_date: date, failures: dict[str, str]
+) -> DividendRecord | None:
     try:
         records = source.fetch_dividends(ticker, ex_date, ex_date)
-    except (SourceUnavailable, SourceDataError):
+    except (SourceUnavailable, SourceDataError) as exc:
+        failures[f"{source.name}:{ticker}"] = str(exc)
         return None
     return next((record for record in records if record.ex_date == ex_date), None)
+
+
+def opening_window(ex_date: date, now: datetime) -> tuple[Session, Session]:
+    """(ex-date session, previous session); `now` must lie in [previous close, ex-date open)."""
+    probe = datetime.combine(ex_date, time(12), tzinfo=UTC)
+    sessions = calendar_for_window(probe, probe).sessions
+    index = next((i for i, s in enumerate(sessions) if s.day == ex_date), None)
+    if index is None:
+        raise ValueError(f"{ex_date} is not a trading session")
+    if index == 0:
+        raise ValueError(f"no session loaded before {ex_date}")
+    session, previous_session = sessions[index], sessions[index - 1]
+    if now < previous_session.close_utc:
+        raise ValueError("dividends must be applied at or after the previous session's close")
+    if now >= session.open_utc:
+        raise ValueError("dividends must be applied before the ex-date session opens")
+    return session, previous_session
 
 
 def _dividend_command(
@@ -101,19 +123,11 @@ def apply_dividends(
     secondary: DividendSource,
     tolerance: Decimal,
     now: datetime,
+    source_failures: dict[str, str] | None = None,
 ) -> list[OrderOutcome]:
-    probe = datetime.combine(ex_date, time(12), tzinfo=UTC)
-    sessions = calendar_for_window(probe, probe).sessions
-    index = next((i for i, s in enumerate(sessions) if s.day == ex_date), None)
-    if index is None:
-        raise ValueError(f"{ex_date} is not a trading session")
-    if index == 0:
-        raise ValueError(f"no session loaded before {ex_date}")
-    session, previous_session = sessions[index], sessions[index - 1]
-    if now < previous_session.close_utc:
-        raise ValueError("dividends must be applied at or after the previous session's close")
-    if now >= session.open_utc:
-        raise ValueError("dividends must be applied before the ex-date session opens")
+    now = require_aware(now, "now")
+    session, previous_session = opening_window(ex_date, now)
+    failures = {} if source_failures is None else source_failures
     position_confirmed_by = previous_session.close_utc - timedelta(minutes=1)
 
     with engine.connect() as conn:
@@ -124,7 +138,7 @@ def apply_dividends(
 
     outcomes: list[OrderOutcome] = []
     for ticker, order_ids in sorted(by_ticker.items()):
-        first, second = _lookup(primary, ticker, ex_date), _lookup(secondary, ticker, ex_date)
+        first, second = _lookup(primary, ticker, ex_date, failures), _lookup(secondary, ticker, ex_date, failures)
         if first is None and second is None:
             continue
         first_amount = None if first is None else first.amount

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -17,6 +17,7 @@ from tests.integration.support import (
     submit_default,
 )
 from tests.support import et
+from virtual_orders.evaluator import replay as replay_module
 from virtual_orders.evaluator.cycle import run_live_cycle
 from virtual_orders.evaluator.rebuild import rebuild_projection
 from virtual_orders.evaluator.replay import ReplayMode, ReplaySelectionError, recalculate_orders, reproduce_orders
@@ -203,3 +204,54 @@ def test_unexpected_error_on_one_source_is_reported_during_recalculate(engine, m
         status, detail = latest_run_status(conn, report.run_id)
     assert status == RunStatus.COMPLETED
     assert detail["failures"] == {str(bad): "ERROR:RuntimeError"}
+
+
+def test_replay_of_a_replay_is_rejected_for_both_modes(engine):
+    order_id, _ = closed_order(engine)
+    replay_id = reproduce_orders(engine, code_version=CODE_VERSION, order_ids=[order_id]).created[order_id]
+    runs_before = count(engine, "evaluation_runs")
+
+    with pytest.raises(ReplaySelectionError, match="replay orders cannot be replayed"):
+        reproduce_orders(engine, code_version=CODE_VERSION, order_ids=[replay_id])
+    with pytest.raises(ReplaySelectionError, match="replay orders cannot be replayed"):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id, replay_id])
+
+    assert count(engine, "evaluation_runs") == runs_before
+
+
+@pytest.mark.parametrize(("overrides", "version", "message"), [
+    ({"no_such_field": Decimal("1")}, None, "unknown config_overrides: no_such_field"),
+    ({"dividend_tolerance": Decimal("0.01")}, None, "config_overrides not applied by RECALCULATE: dividend_tolerance"),
+    ({"commission_per_execution": 1.5}, None, "invalid config_overrides"),
+    ({"risk_amount": Decimal("-1")}, None, "invalid config_overrides"),
+    ({"zone_lost_policy": "SOMETIMES"}, None, "invalid config_overrides"),
+    ({"data_gap_minutes": "15"}, None, "invalid config_overrides"),
+    ({}, "v9", "unknown fill_model_version: v9"),
+])
+def test_invalid_recalculation_requests_are_rejected_before_any_run(engine, overrides, version, message):
+    order_id, _ = closed_order(engine)
+    runs_before, orders_before = count(engine, "evaluation_runs"), count(engine, "orders")
+
+    with pytest.raises(ReplaySelectionError, match=message):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id],
+                           config_overrides=overrides, fill_model_version=version)
+
+    assert count(engine, "evaluation_runs") == runs_before
+    assert count(engine, "orders") == orders_before
+
+
+def test_single_order_recalculation_is_private():
+    assert not hasattr(replay_module, "recalculate_order")
+    assert callable(replay_module._recalculate_order)
+
+
+def test_data_as_of_guards_are_selection_errors(engine):
+    order_id, _ = closed_order(engine)
+    runs_before = count(engine, "evaluation_runs")
+    with pytest.raises(ReplaySelectionError, match="data_as_of must be timezone-aware"):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id],
+                           data_as_of=datetime(2100, 1, 1))  # noqa: DTZ001 - deliberately naive
+    with pytest.raises(ReplaySelectionError, match="data_as_of cannot be later than the ingestion watermark"):
+        recalculate_orders(engine, code_version=CODE_VERSION, order_ids=[order_id],
+                           data_as_of=datetime(2100, 1, 1, tzinfo=UTC))
+    assert count(engine, "evaluation_runs") == runs_before

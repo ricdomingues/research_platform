@@ -84,3 +84,18 @@ class ReferenceSource(Protocol):
     def fetch_minute_bars(self, ticker: str, day: date) -> dict[datetime, Bar]: ...
 
     def fetch_daily_range(self, ticker: str, day: date) -> tuple[Decimal, Decimal] | None: ...
+
+
+@dataclass(frozen=True)
+class TickerStatus:
+    ticker: str
+    tradable: bool
+    reason: str | None = None
+
+
+class TickerCheck(Protocol):
+    """Spec 3.8: ticker active and tradable. Unavailability raises SourceUnavailable/SourceDataError."""
+
+    name: str
+
+    def check_ticker(self, ticker: str) -> TickerStatus: ...

@@ -12,6 +12,7 @@ from sqlalchemy import Connection, Engine, text
 from core.actionability import ManualOrderRejected, build_manual_order
 from core.domain.models import FillConfig, OrderContext, Origin
 from core.fills import get_fill_model
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.context import DEFAULT_FILL_MODEL_VERSION, signal_context
 from virtual_orders.evaluator.coverage import STRICT_PRIMARY_COVERAGE, CoveragePolicy
 from virtual_orders.ledger.orders import OrderRow, SignalRow, get_signal
@@ -140,11 +141,11 @@ def create_manual_order(
     gateway: MarketDataGateway | None = None,
     coverage_policy: CoveragePolicy = STRICT_PRIMARY_COVERAGE,
 ) -> ManualOrderCreated:
-    with engine.connect() as conn:
-        signal = get_signal(conn, signal_id)
     # T is the click, captured once (spec 3.4.1): used unchanged for both the ingest window ceiling and the
     # decision, so a fetch that straddles a minute boundary can never move T or spuriously fail actionability.
-    decided_at = (created_at or datetime.now(UTC)).astimezone(UTC)
+    decided_at = require_aware(created_at, "created_at") if created_at is not None else datetime.now(UTC)
+    with engine.connect() as conn:
+        signal = get_signal(conn, signal_id)
     expired = decided_at >= signal.valid_until_ts
     ingest_error: str | None = None
     if gateway is not None and not expired:

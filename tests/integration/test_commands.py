@@ -20,6 +20,7 @@ from tests.integration.support import (
 from tests.support import et
 from virtual_orders.evaluator.commands import (
     OrderAlreadyFinal,
+    ReplayOrderReadOnly,
     cancel_order,
     expire_due_orders,
     finalize_validity,
@@ -27,6 +28,7 @@ from virtual_orders.evaluator.commands import (
     freeze_order,
 )
 from virtual_orders.evaluator.cycle import evaluate_order, run_live_cycle
+from virtual_orders.evaluator.replay import reproduce_orders
 from virtual_orders.ledger import errors
 from virtual_orders.ledger.events import stored_events
 from virtual_orders.ledger.orders import delete_projection, load_projection, lock_order, read_projection_row
@@ -170,3 +172,23 @@ def test_freeze_and_review_commands_are_idempotent(engine):
     assert flag_order_review(engine, order_id, reason="MANUAL", ref="x").event_keys == ("NEEDS_REVIEW:MANUAL:x",)
     assert flag_order_review(engine, order_id, reason="MANUAL", ref="x").event_keys == ()
     assert expire_due_orders(engine, now=AFTER_VALIDITY) == []
+
+
+@pytest.mark.parametrize("command", [
+    lambda engine, order_id: cancel_order(engine, order_id, at=et(DAY, "13:30")),
+    lambda engine, order_id: freeze_order(engine, order_id, reason="SPLIT", ref="2025-11-26"),
+    lambda engine, order_id: flag_order_review(engine, order_id, reason="MANUAL", ref="looked-odd"),
+    lambda engine, order_id: finalize_validity(engine, order_id, now=AFTER_VALIDITY),
+], ids=["cancel", "freeze", "flag", "finalize"])
+def test_commands_reject_replay_orders_without_writing(engine, command):
+    source_id = submit_default(engine).auto_order_id
+    cycle(engine, FakeBarSource(scenario_bars()), "10:30")
+    replay_id = reproduce_orders(engine, code_version=CODE_VERSION, order_ids=[source_id]).created[source_id]
+    before = keys(engine, replay_id)
+
+    with pytest.raises(ReplayOrderReadOnly) as caught:
+        command(engine, replay_id)
+
+    assert caught.value.order_id == replay_id
+    assert keys(engine, replay_id) == before
+    assert count(engine, "integrity_incidents") == 0

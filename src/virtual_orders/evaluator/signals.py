@@ -16,6 +16,7 @@ from core.domain.hashing import sha256_hex
 from core.domain.models import Direction, FillConfig, Origin, SignalSpec, coerce_decimal
 from core.domain.validation import validate_signal
 from core.fills import get_fill_model
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.context import DEFAULT_FILL_MODEL_VERSION, SIGNAL_CALENDAR_HORIZON, build_order_context
 from virtual_orders.ledger.orders import OrderRow, SignalRow, auto_order_id, find_signal_by_client_id, insert_signal
 from virtual_orders.ledger.writes import persist_new_order
@@ -127,6 +128,7 @@ def submit_signal(
     price_source: str,
     now: datetime | None = None,
 ) -> SignalSubmission:
+    now = require_aware(now, "now") if now is not None else None
     try:
         payload_hash = sha256_hex(dict(body))
     except (TypeError, ValueError) as exc:

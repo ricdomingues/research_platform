@@ -9,6 +9,8 @@ Fixtures reais sanitizadas, quando existirem, entram com rótulo próprio e não
 | `alpaca/bars_page1.json` | synthetic/documentation-derived fixture | Alpaca Market Data v2 `GET /v2/stocks/{symbol}/bars` (página com `next_page_token`) |
 | `alpaca/bars_page2.json` | synthetic/documentation-derived fixture | Alpaca Market Data v2 `GET /v2/stocks/{symbol}/bars` (última página) |
 | `alpaca/corporate_actions.json` | synthetic/documentation-derived fixture | Alpaca `GET /v1/corporate-actions` (forward/reverse splits) |
+| `alpaca/asset_active.json` | synthetic/documentation-derived fixture | Alpaca Trading API `GET /v2/assets/{symbol_or_asset_id}` (ativo negociável) |
+| `alpaca/asset_inactive.json` | synthetic/documentation-derived fixture | Alpaca Trading API `GET /v2/assets/{symbol_or_asset_id}` (ativo inativo) |
 | `fmp/dividends.json` | synthetic/documentation-derived fixture | FMP `GET /stable/dividends` |
 | `yfinance/aapl_1m_2025-11-25.csv` | synthetic/documentation-derived fixture | `yfinance.Ticker.history(interval="1m", auto_adjust=False, actions=True)` |
 | `yfinance/aapl_1d_2025-11.csv` | synthetic/documentation-derived fixture | `yfinance.Ticker.history(interval="1d", auto_adjust=False, actions=True)` |

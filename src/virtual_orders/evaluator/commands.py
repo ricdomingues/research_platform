@@ -14,6 +14,7 @@ from sqlalchemy import Connection, Engine, text
 from core.domain.calendar import ONE_MINUTE
 from core.domain.models import Bar, OrderContext, OrderStatus, StepResult
 from core.fills import get_fill_model
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.evaluator.context import load_order_context
 from virtual_orders.evaluator.outcomes import OrderOutcome, isolated
 from virtual_orders.ledger.errors import PROCESSED_BAR_MISSING, PROJECTION_MISSING, LedgerIntegrityError
@@ -27,6 +28,14 @@ from virtual_orders.marketdata.asof import read_bars_as_of
 class OrderAlreadyFinal(Exception):
     def __init__(self, order_id: UUID) -> None:
         super().__init__(f"order {order_id} is already final")
+        self.order_id = order_id
+
+
+class ReplayOrderReadOnly(Exception):
+    """Replay orders are derived history (spec 3.6): no command may append to them (D15)."""
+
+    def __init__(self, order_id: UUID) -> None:
+        super().__init__(f"order {order_id} is a replay and accepts no commands")
         self.order_id = order_id
 
 
@@ -44,6 +53,8 @@ def apply_command(engine: Engine, order_id: UUID, command: Callable[[CommandInpu
     def operation() -> OrderOutcome:
         with engine.begin() as conn:
             order = lock_order(conn, order_id)
+            if order.replay:
+                raise ReplayOrderReadOnly(order_id)
             projection = load_projection(conn, order_id)
             if projection is None:
                 raise LedgerIntegrityError(PROJECTION_MISSING, "order_state missing", order_id=order_id)
@@ -72,7 +83,7 @@ def processed_bar(conn: Connection, order: OrderRow, ticker: str, ts: datetime) 
 def cancel_order(
     engine: Engine, order_id: UUID, *, at: datetime | None = None, requested_by: str = "user"
 ) -> OrderOutcome:
-    moment = (at or datetime.now(UTC)).astimezone(UTC)
+    moment = require_aware(at, "at") if at is not None else datetime.now(UTC)
 
     def command(inp: CommandInput) -> StepResult:
         if inp.projection.state.is_final:
