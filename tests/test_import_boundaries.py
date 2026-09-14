@@ -46,7 +46,10 @@ APPLICATION_LAYER = (
 APPLICATION_NEUTRAL = ("virtual_orders/services.py", "virtual_orders/config.py")
 WORKER_PACKAGE = "virtual_orders/worker"
 WORKER_ENTRYPOINT = "virtual_orders/worker/__main__.py"
-PLATFORM_PURE_MODULES = ["virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py"]
+PLATFORM_PURE_MODULES = [
+    "virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py",
+    "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+]
 PLATFORM_INFRASTRUCTURE = (
     "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
     "virtual_orders.marketdata", "virtual_orders.api", "virtual_orders.worker", "virtual_orders.bootstrap",
