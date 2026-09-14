@@ -95,6 +95,8 @@ def cancel_order(
 
 
 def finalize_validity(engine: Engine, order_id: UUID, *, now: datetime) -> OrderOutcome:
+    now = require_aware(now, "now")
+
     def command(inp: CommandInput) -> StepResult:
         state = inp.projection.state
         last_bar = None
@@ -133,6 +135,7 @@ def expire_due_orders(engine: Engine, *, now: datetime, exclude_feeds: Collectio
     calling cycle: those orders are left for a later call instead of being finalized without data.
     Projection-less orders are selected on purpose so they surface as `PROJECTION_MISSING` incidents.
     """
+    now = require_aware(now, "now")
     excluded = set(exclude_feeds)
     with engine.connect() as conn:
         rows = conn.execute(_DUE_ORDERS, {"now": now}).all()

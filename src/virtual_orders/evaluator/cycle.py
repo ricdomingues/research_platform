@@ -88,6 +88,8 @@ def open_order_cursors(conn: Connection) -> list[OpenOrderCursor]:
 def evaluate_order(
     engine: Engine, order_id: UUID, run: RunInfo, *, market_now: datetime, close_trailing_gap: bool = False
 ) -> OrderOutcome:
+    market_now = require_aware(market_now, "market_now")
+
     def operation() -> OrderOutcome:
         with engine.begin() as conn:
             order = lock_order(conn, order_id)
@@ -192,7 +194,7 @@ def run_live_cycle(
         except Exception as exc:
             if run is not None:
                 with engine.begin() as conn:
-                    finish_run(conn, run.run_id, RunStatus.FAILED, {"error": repr(exc)})
+                    finish_run(conn, run.run_id, RunStatus.FAILED, {"error": repr(exc), "market_now": now})
             raise
         finally:
             release_cycle_lock(lock_conn)

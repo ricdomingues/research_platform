@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from tests.integration.support import (
@@ -99,3 +100,23 @@ def test_run_kind_check_accepts_opening_and_rejects_unknown_kinds(engine):
         with engine.begin() as conn:
             conn.execute(tables.evaluation_runs.insert().values(
                 run_id=uuid4(), kind="NOPE", data_as_of=as_of, code_version=CODE_VERSION, started_at=as_of))
+
+
+class ExplodingDividends:
+    name = "exploding"
+
+    def fetch_dividends(self, ticker, start, end):
+        raise RuntimeError("programming error (fake)")
+
+
+def test_unexpected_error_marks_the_opening_run_failed(engine):
+    open_confirmed(engine)
+    with pytest.raises(RuntimeError):
+        opening(engine, ExplodingDividends(), FakeDividends("yfinance"), FakeSplits())
+    with engine.connect() as conn:
+        run_id = conn.execute(
+            select(tables.evaluation_runs.c.run_id).where(tables.evaluation_runs.c.kind == "OPENING")
+        ).scalar_one()
+        status, detail = latest_run_status(conn, run_id)
+    assert status is RunStatus.FAILED
+    assert detail["session_day"] == EX_DAY and detail["error"].startswith("RuntimeError")

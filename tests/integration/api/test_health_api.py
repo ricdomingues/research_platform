@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
 from alembic import command
@@ -115,3 +116,15 @@ def test_schema_behind_the_migration_head_is_503_without_facts(api, database_url
                     "detail": {"expected": "0002", "found": "0001"}}],
         "facts": None,
     }
+
+
+def test_failed_live_run_staleness_uses_its_recorded_market_now(api):
+    with api.services.engine.begin() as conn:
+        run = start_run(conn, RunKind.LIVE, et(DAY, "09:00"), CODE_VERSION)
+        finish_run(conn, run.run_id, RunStatus.FAILED,
+                   {"error": "RuntimeError('x')", "market_now": et(DAY, "10:00")})
+    api.clock.set(et(DAY, "10:30"))
+    status, body = health(api)
+    assert status == 200 and body["state"] == "DEGRADED"
+    stale = next(c for c in body["causes"] if c["code"] == "LIVE_CYCLE_STALE")
+    assert datetime.fromisoformat(stale["detail"]["last_market_now"]) == et(DAY, "10:00")
