@@ -2,7 +2,7 @@
 
 - **Plano:** `docs/superpowers/plans/2026-09-12-virtual-order-engine-core.md`
 - **Spec:** v1.1 (`spec/virtual-order-engine-v1.1`)
-- **Intervalo:** `a9dbdf0..c7e662f` (código) — 12 tasks, 5 rodadas de correção por task, 2 revisões de branch inteiro com rodadas de correção, 1 close-out
+- **Intervalo:** `2868e1b..b24cf69` (código) — 12 tasks, 5 rodadas de correção por task, 2 revisões de branch inteiro com rodadas de correção, 1 close-out
 - **Testes:** 180 passando (unitários + Hypothesis com geradores ancorados, com viés pós-entrada e busca de alcançabilidade determinística)
 - **Resultado:** revisão final de branch → pronto para tag; nenhum resultado de `fill_model v1` persistido até aqui
 
