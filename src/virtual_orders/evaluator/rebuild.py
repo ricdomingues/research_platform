@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Engine, select
 
 from virtual_orders.evaluator.history import regenerate_history
-from virtual_orders.ledger.errors import HistoryDivergence, LedgerIntegrityError, ProjectionIntegrityError
+from virtual_orders.evaluator.outcomes import ERROR_PREFIX
+from virtual_orders.ledger.errors import (
+    HistoryDivergence,
+    LedgerIntegrityError,
+    OrderNotFound,
+    ProjectionIntegrityError,
+)
 from virtual_orders.ledger.orders import Projection, lock_order, projection_row, read_projection_row, save_projection
 from virtual_orders.ledger.quarantine import run_guarded
 from virtual_orders.storage.tables import orders
@@ -47,9 +54,14 @@ def rebuild_projection(engine: Engine, order_id: UUID) -> dict[str, Any]:
     return run_guarded(engine, operation)
 
 
-def rebuild_all_projections(engine: Engine) -> dict[UUID, str]:
-    with engine.connect() as conn:
-        order_ids = list(conn.execute(select(orders.c.id).order_by(orders.c.created_at, orders.c.id)).scalars())
+ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
+
+
+def rebuild_all_projections(engine: Engine, order_ids: Sequence[UUID] | None = None) -> dict[UUID, str]:
+    """rebuild-projections (spec 6): one isolated result per order; one bad order never stops the scan."""
+    if order_ids is None:
+        with engine.connect() as conn:
+            order_ids = list(conn.execute(select(orders.c.id).order_by(orders.c.created_at, orders.c.id)).scalars())
     report: dict[UUID, str] = {}
     for order_id in order_ids:
         try:
@@ -57,4 +69,8 @@ def rebuild_all_projections(engine: Engine) -> dict[UUID, str]:
             report[order_id] = "OK"
         except LedgerIntegrityError as error:
             report[order_id] = error.kind
+        except OrderNotFound:
+            report[order_id] = ORDER_NOT_FOUND
+        except Exception as exc:  # noqa: BLE001 - reported per order, like the evaluator batches
+            report[order_id] = f"{ERROR_PREFIX}{type(exc).__name__}"
     return report
