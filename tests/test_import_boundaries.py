@@ -251,3 +251,51 @@ def test_no_module_imports_a_conftest() -> None:
         for path in _root_test_files()
     }
     assert {name: modules for name, modules in offenders.items() if modules} == {}
+
+
+DASHBOARD_PROJECT = ROOT / "dashboard"
+DASHBOARD_SOURCES = ("dashboard", "tests")  # never dashboard/.venv: that is Streamlit's own site-packages
+DASHBOARD_FORBIDDEN = (
+    "core", "virtual_orders", "tests", "sqlalchemy", "psycopg", "alembic", "yfinance", "pandas_market_calendars",
+    "apscheduler", "fastapi", "starlette", "uvicorn",
+)
+UI_LIBRARIES = ("dashboard", "streamlit", "plotly")
+
+
+def _dashboard_files() -> list[Path]:
+    files: list[Path] = []
+    for folder in DASHBOARD_SOURCES:
+        if (DASHBOARD_PROJECT / folder).exists():
+            files.extend(sorted((DASHBOARD_PROJECT / folder).rglob("*.py")))
+    return files
+
+
+def _dashboard_rel(path: Path) -> str:
+    return str(path.relative_to(ROOT))
+
+
+@pytest.mark.parametrize("path", _dashboard_files(), ids=_dashboard_rel)
+def test_dashboard_talks_to_the_platform_only_over_http(path: Path) -> None:
+    assert _offending(path, DASHBOARD_FORBIDDEN) == []
+
+
+@pytest.mark.parametrize("path", _platform_files() + _core_files(), ids=_rel)
+def test_platform_and_core_never_import_the_dashboard_or_ui_libraries(path: Path) -> None:
+    assert _offending(path, UI_LIBRARIES) == []
+
+
+def test_root_tests_never_import_the_dashboard_or_ui_libraries() -> None:
+    # D57: the API/dashboard contract crosses projects as recorded JSON fixtures, never as an import.
+    offenders = {_dashboard_rel(path): _offending(path, UI_LIBRARIES) for path in _root_test_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+
+
+def test_boundary_scan_covers_the_dashboard_project() -> None:
+    assert "dashboard/dashboard/__init__.py" in {_dashboard_rel(p) for p in _dashboard_files()}
+    assert not any(".venv" in path.parts for path in _dashboard_files())
+    assert (DASHBOARD_PROJECT / "pyproject.toml").exists() and (DASHBOARD_PROJECT / "uv.lock").exists()
+    root_lock = (ROOT / "uv.lock").read_text()
+    for library in ("streamlit", "plotly"):
+        assert f'name = "{library}"' not in root_lock, library  # D56: UI libraries never enter the engine lock
+        assert importlib.util.find_spec(library) is None, library
+    assert "core" in DASHBOARD_FORBIDDEN and "virtual_orders" in DASHBOARD_FORBIDDEN

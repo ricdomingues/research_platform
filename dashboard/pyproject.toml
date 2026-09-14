@@ -1,0 +1,50 @@
+[project]
+name = "vo-dashboard"
+version = "0.1.0"
+description = "Streamlit dashboard for the Virtual Order Engine; talks to the API over HTTP only (spec 2.1, D40, D56)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28",
+    "plotly>=5.24,<7",
+    "streamlit>=1.40,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff==0.8.6",
+    "mypy==1.13.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dashboard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dashboard", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["dashboard"]
+
+[[tool.mypy.overrides]]
+# Third-party library without type information (Plan 3C, D40): figures are built and asserted structurally.
+module = ["plotly", "plotly.*"]
+ignore_missing_imports = true
