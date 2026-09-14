@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy import Engine
 
 from core.domain.models import FillConfig
+from virtual_orders.alerts.sink import AlertSink
 from virtual_orders.marketdata.gateway import MarketDataGateway
 from virtual_orders.marketdata.sources import DividendSource, ReferenceSource, SplitSource, TickerCheck
 
@@ -31,3 +32,4 @@ class Services:
     bootstrap_seed: int
     clock: Callable[[], datetime] = field(repr=False)
     close: Callable[[], None] = field(repr=False)
+    alert_sink: AlertSink | None = field(default=None, repr=False)

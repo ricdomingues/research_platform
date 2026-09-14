@@ -16,6 +16,7 @@ from virtual_orders.marketdata.alpaca import AlpacaAssets, AlpacaBars, AlpacaSpl
 from virtual_orders.marketdata.fmp import FmpDividends
 from virtual_orders.marketdata.gateway import MarketDataGateway
 from virtual_orders.marketdata.yfinance_source import YFinanceSource
+from virtual_orders.notify.n8n import N8nWebhook
 from virtual_orders.services import Services
 from virtual_orders.storage.database import make_engine
 
@@ -35,23 +36,31 @@ def build_services(
 ) -> Services:
     owns_client = http_client is None
     client = http_client if http_client is not None else httpx.Client(timeout=HTTP_TIMEOUT_SECONDS)
-    gateway = MarketDataGateway([AlpacaBars(client, settings.alpaca_api_key, settings.alpaca_secret_key)])
-    if settings.price_source not in gateway.source_ids:
+
+    def release_client() -> None:
         if owns_client:
             client.close()
+
+    gateway = MarketDataGateway([AlpacaBars(client, settings.alpaca_api_key, settings.alpaca_secret_key)])
+    if settings.price_source not in gateway.source_ids:
+        release_client()
         raise ConfigError([
             f"UNKNOWN_PRICE_SOURCE:PRICE_SOURCE (registered: {', '.join(gateway.source_ids)})",
         ])
     owns_engine = engine is None
-    database = engine if engine is not None else make_engine(settings.database_url)
+    try:
+        database = engine if engine is not None else make_engine(settings.database_url)
+    except Exception:
+        release_client()  # Plan 3A close-out entry 12: never leak the owned client on a failed startup
+        raise
 
     def close() -> None:
-        if owns_client:
-            client.close()
+        release_client()
         if owns_engine:
             database.dispose()
 
     yfinance = YFinanceSource()
+    alert_sink = None if settings.n8n_webhook_url is None else N8nWebhook(client, settings.n8n_webhook_url)
     return Services(
         engine=database,
         gateway=gateway,
@@ -70,6 +79,7 @@ def build_services(
         bootstrap_seed=settings.bootstrap_seed,
         clock=clock or _utc_now,
         close=close,
+        alert_sink=alert_sink,
     )
 
 
