@@ -3,7 +3,11 @@
 ## Subir
 
 ```bash
-cp .env.example .env            # troque todos os change-me; a senha de DATABASE_URL = POSTGRES_PASSWORD
+cp .env.example .env            # troque todos os change-me: mesmo usuário/banco/senha de POSTGRES_USER/POSTGRES_DB/
+                                 # POSTGRES_PASSWORD, mas a senha vai percent-encoded dentro de DATABASE_URL quando
+                                 # tiver caracteres reservados (/ + = @ : %); ex.:
+                                 # python -c "from urllib.parse import quote; print(quote(SENHA, safe=''))"
+                                 # o Compose interpola "$" em valores do .env: evite ou escreva "$$"
 export GIT_SHA="$(git rev-parse --short HEAD)"   # o mesmo valor para build e up: a imagem não é reconstruída
 docker compose config --quiet   # valida o arquivo e a interpolação, sem rede
 docker compose build            # imagem do motor (uma vez, pelo migrate) e imagem do dashboard (dashboard/uv.lock)

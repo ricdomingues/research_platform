@@ -118,7 +118,7 @@ def test_both_images_are_built_from_their_own_lock_without_dev_dependencies_as_a
         uv_images |= {line.split()[1] for line in copies if line.startswith("COPY --from=ghcr.io/astral-sh/uv:")}
     assert len(uv_images) == 1  # the same pinned uv in both images (D58)
     assert not any("dashboard" in line for line in dockerfile_lines(ROOT / "Dockerfile"))  # D56
-    assert {".env", ".git", ".venv", "tests", "dashboard"} <= set((ROOT / ".dockerignore").read_text().split())
+    assert {".env", "**/.env", ".git", ".venv", "tests", "dashboard"} <= set((ROOT / ".dockerignore").read_text().split())
     assert {".venv", "tests", ".env", "**/.env"} <= set((ROOT / "dashboard" / ".dockerignore").read_text().split())
 
 

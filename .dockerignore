@@ -1,6 +1,7 @@
 .git
 .venv
 .env
+**/.env
 .hypothesis
 .ruff_cache
 .mypy_cache
