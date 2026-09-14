@@ -109,6 +109,19 @@ def test_events_older_than_the_lookback_are_not_alerted_and_surface_as_behind(en
     assert report.state is HealthState.HEALTHY
 
 
+def test_behind_only_counts_events_inside_the_behind_window(engine, monkeypatch):
+    order_id = closed_order(engine)
+    assert enqueue_order_event_alerts(engine) == 3  # alerting started: marks exist from here on
+    flag_order_review(engine, order_id, reason="MANUAL", ref="2025-11-25")
+    monkeypatch.setattr(outbox, "ORDER_EVENT_LOOKBACK", timedelta(0))
+    with engine.connect() as conn:
+        assert order_event_alerts_behind(conn) == 1
+
+    monkeypatch.setattr(outbox, "ORDER_EVENT_BEHIND_WINDOW", timedelta(0))  # D50 (M1): older than the cap
+    with engine.connect() as conn:
+        assert order_event_alerts_behind(conn) == 0
+
+
 def test_without_any_mark_nothing_is_behind(engine, monkeypatch):
     closed_order(engine)  # webhook never enabled: no scan, no marks
     monkeypatch.setattr(outbox, "ORDER_EVENT_LOOKBACK", timedelta(0))

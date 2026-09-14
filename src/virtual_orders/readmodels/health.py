@@ -368,6 +368,17 @@ _ORDERS_WITHOUT_PROJECTION = (
 )
 
 
+_JOB_ANCHOR = text(
+    """
+    SELECT min((latest.detail->>'session_day')::date)
+    FROM evaluation_runs r
+    JOIN LATERAL (
+        SELECT detail FROM evaluation_run_status s WHERE s.run_id = r.run_id ORDER BY s.id DESC LIMIT 1
+    ) latest ON true
+    WHERE r.kind IN ('OPENING', 'END_OF_DAY') AND latest.detail->>'session_day' IS NOT NULL
+    """
+)
+
 _JOB_RUNS = text(
     """
     SELECT r.kind, (latest.detail->>'session_day')::date AS session_day, latest.status
@@ -376,24 +387,28 @@ _JOB_RUNS = text(
         SELECT status, detail FROM evaluation_run_status s WHERE s.run_id = r.run_id ORDER BY s.id DESC LIMIT 1
     ) latest ON true
     WHERE r.kind IN ('OPENING', 'END_OF_DAY') AND latest.detail->>'session_day' IS NOT NULL
+      AND (latest.detail->>'session_day')::date >= :since_day
     """
 )
 
 
 def missing_job_runs(conn: Connection, *, now: datetime) -> dict[str, list[str]]:
-    """D38: past sessions after the first recorded OPENING/END_OF_DAY session without a COMPLETED run past grace."""
-    rows = conn.execute(_JOB_RUNS).all()
-    if not rows:
+    """D38: past sessions after the first recorded OPENING/END_OF_DAY session without a COMPLETED run past grace.
+
+    D50 (T9): the anchor is one aggregate; only runs of the sessions actually checked are read."""
+    anchor = conn.execute(_JOB_ANCHOR).scalar_one()
+    if anchor is None:
         return {}  # no scheduled job ever ran here: a fresh database is not degraded
-    anchor = min(row.session_day for row in rows)
-    completed = {(row.kind, row.session_day) for row in rows if row.status == "COMPLETED"}
     start = max(datetime.combine(anchor, time(12), tzinfo=UTC), now - MISSING_RUN_LOOKBACK)
     if start >= now:
         return {}
+    sessions = [s for s in calendar_for_window(start, now).sessions if s.day > anchor]
+    if not sessions:
+        return {}
+    rows = conn.execute(_JOB_RUNS, {"since_day": sessions[0].day}).all()
+    completed = {(row.kind, row.session_day) for row in rows if row.status == "COMPLETED"}
     missing: dict[str, list[str]] = {}
-    for session in calendar_for_window(start, now).sessions:
-        if session.day <= anchor:
-            continue
+    for session in sessions:
         if session.open_utc + OPENING_GRACE <= now and ("OPENING", session.day) not in completed:
             missing.setdefault("OPENING", []).append(session.day.isoformat())
         eod_deadline = max(

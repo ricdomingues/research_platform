@@ -30,6 +30,7 @@ ALERT_EXPIRY = timedelta(hours=24)
 UNDELIVERABLE_WINDOW = timedelta(days=7)
 ORDER_EVENT_LOOKBACK = timedelta(days=4)  # a long weekend without re-sending the whole history on first start
 ORDER_EVENT_SCAN_LIMIT = 500
+ORDER_EVENT_BEHIND_WINDOW = UNDELIVERABLE_WINDOW  # D50 (M1): past this age a lost alert stops counting as "behind"
 ORDER_EVENT_ALERT_TYPES = (
     "FILLED", "TARGET1_HIT", "TARGET2_HIT", "STOPPED", "TIME_EXIT", "EXPIRED", "INVALIDATED", "NEEDS_REVIEW",
 )
@@ -235,6 +236,7 @@ _BEHIND = text(
     JOIN orders o ON o.id = e.order_id
     WHERE NOT o.replay AND e.type = ANY(:types)
       AND e.recorded_at < clock_timestamp() - :lookback
+      AND e.recorded_at >= clock_timestamp() - :window
       AND e.recorded_at >= (SELECT min(m.recorded_at) FROM alert_event_marks m)
       AND NOT EXISTS (SELECT 1 FROM alert_event_marks m WHERE m.order_event_id = e.id)
     """
@@ -300,7 +302,7 @@ def undeliverable_alerts(conn: Connection) -> int:
 
 
 def order_event_alerts_behind(conn: Connection) -> int:
-    """D35: unmarked alertable events that aged past the lookback after alerting started (no marks -> 0)."""
+    """D35 + D50: unmarked alertable events that aged past the lookback after alerting started, within the cap."""
     return int(conn.execute(_BEHIND, {
-        "types": list(ORDER_EVENT_ALERT_TYPES), "lookback": ORDER_EVENT_LOOKBACK,
+        "types": list(ORDER_EVENT_ALERT_TYPES), "lookback": ORDER_EVENT_LOOKBACK, "window": ORDER_EVENT_BEHIND_WINDOW,
     }).scalar_one())
