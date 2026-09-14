@@ -6230,10 +6230,9 @@ git tag -a plan/virtual-order-engine-dashboard-complete -m "Plan 3C — dashboar
 
 ## Encerramento do controlador
 
-Preenchido pelo controlador ao final da Task 15:
-- modelo de execução por task;
-- rodadas de correção;
-- verificação final do zero (contagem, ruff, mypy, `src/core`, `BASE`, autores e trailers);
-- saída do smoke;
-- estado da tag;
-- caminho da nota de encerramento.
+- **Modelo de execução por task:** implementadores em haiku para T4, T10 e T15 Step 1 (código pequeno e completo); sonnet para T1–T3, T5–T9, T11–T14. Revisores sonnet por padrão; opus para T1 (dois projetos + mudança de helpers), T7 (rotas de mercado as-of), T12 (maior task, view-models + fixtures de contrato), T14 (Dockerfiles/Compose) e para a revisão final de branch inteiro. Re-revisões em haiku/sonnet conforme o tamanho do achado.
+- **Rodadas de correção:** T11 — 1 rodada (rejeição de NaN/Infinity, `commits c03d912..fdf07aa`); T12 — 1 rodada (fixtures determinísticas, Decimal exato, asserções mais estritas, `commit 8c0d0fd`); T14 — 1 rodada (código de saída 2 duplo, `--locked`, `USER vo`, `.dockerignore` do dashboard, chave do runbook sem argv, `commit a1a2984`); revisão final de branch inteiro — 1 rodada de correção (5 itens: Minor 1, Minor 2, Minor 7, Minor 8 e o T8 adiado; `commits db9a883..1e2d6de`).
+- **Verificação final do zero** (commit `1e2d6de`): 1128 testes passando na raiz (908 herdados de `N_BASE`, medidos em `8da0f24`, o encerramento do Plano 3B), 47 no dashboard, ambos 0 skips e 0 warnings; a chamada mista de raiz/`api`/`worker`/`integration`/`evaluator`/`deploy` passa com 451 testes; `ruff` e `mypy` limpos nos dois projetos (110 arquivos na raiz, 15 no dashboard); os dois `uv sync --locked` sem mudanças; `git diff plan/virtual-order-engine-core-complete -- src/core` e `git status --porcelain -- src/core` vazios; `BASE=plan-3b-worker` (`0fd2707`); 24 commits de implementação/correção antes deste encerramento (25 com este commit); nenhum trailer `Co-Authored-By`/`Claude-Session`; autor único `Ricardo Carneiro <132141856+ricdomingues@users.noreply.github.com>`.
+- **Saída do smoke (sem rede):** 22 rotas na lista esperada, seguidas de `portfolio_source: None` (portfólio real desligado, D46); configuração do dashboard faltando `['MISSING:DASHBOARD_API_URL', 'MISSING:API_KEY']`; `docker-compose.yml` com os serviços `['api', 'dashboard', 'migrate', 'postgres', 'worker']` e `stop_grace_period` de `150s`; `python -m virtual_orders.worker run` sem configuração sai com `exit=2` e uma linha `CONFIG_INVALID`; Streamlit na versão sondada na Task 1 (1.63.0). As duas imagens (motor e dashboard) foram construídas com `docker compose build` durante a Task 14; nenhuma foi executada com `up` até agora (entrada 10 da nota de encerramento).
+- **Estado da tag:** `plan/virtual-order-engine-dashboard-complete` — a ser criada localmente após verificação, sem push, e só depois de confirmado que nenhuma revisão segue aberta (a re-revisão da rodada de correção final marcou os 5 achados como ADDRESSED, sem achado bloqueante pendente).
+- **Nota de encerramento:** `docs/superpowers/notes/2026-09-14-plan3c-closeout.md`.
