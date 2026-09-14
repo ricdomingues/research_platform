@@ -203,6 +203,26 @@ def validate_recalculation_request(
         raise ReplaySelectionError(f"invalid config_overrides: {exc}") from exc
 
 
+def validate_overrides_for_sources(
+    conn: Connection, source_ids: Sequence[UUID], config_overrides: Mapping[str, Any] | None
+) -> None:
+    """M6 (D29): overrides must build a valid FillConfig on top of each source order's own configuration."""
+    if not config_overrides or not source_ids:
+        return
+    overrides = to_document(dict(config_overrides))
+    rejected: list[str] = []
+    rows = conn.execute(
+        select(orders.c.id, orders.c.config_snapshot).where(orders.c.id.in_(list(source_ids))).order_by(orders.c.id)
+    )
+    for row in rows:
+        try:
+            config_from_snapshot({**row.config_snapshot, **overrides})
+        except (TypeError, ValueError, ArithmeticError):
+            rejected.append(str(row.id))
+    if rejected:
+        raise ReplaySelectionError(f"config_overrides invalid for source orders: {', '.join(rejected)}")
+
+
 def _chunks_by_dividend(
     minutes: Sequence[datetime], session_day_of: Mapping[datetime, date], dividend_days: set[date]
 ) -> list[tuple[date | None, list[datetime]]]:
@@ -320,6 +340,7 @@ def recalculate_orders(
     validate_recalculation_request(fill_model_version, config_overrides)
     with engine.connect() as conn:
         source_ids = select_source_orders(conn, order_ids=order_ids, created_from=created_from, created_to=created_to)
+        validate_overrides_for_sources(conn, source_ids, config_overrides)
     watermark = acquire_data_as_of(engine)
     if data_as_of is not None and data_as_of > watermark:
         raise ReplaySelectionError("data_as_of cannot be later than the ingestion watermark")
