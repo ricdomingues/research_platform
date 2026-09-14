@@ -35,7 +35,7 @@
     "incident_groups": [],
     "incidents_total": 0,
     "last_end_of_day": {
-      "data_as_of": "2026-09-14T17:45:23.159729+00:00",
+      "data_as_of": "2000-01-01T00:00:00+00:00",
       "detail": {
         "integrity_errors": {},
         "not_evaluated": {},
@@ -45,15 +45,15 @@
         "unavailable": []
       },
       "kind": "END_OF_DAY",
-      "run_id": "b9b7a1ad-feae-4e0d-a822-f286f988b683",
-      "started_at": "2026-09-14T17:45:23.160906+00:00",
+      "run_id": "00000000-0000-4000-8000-000000000019",
+      "started_at": "2000-01-01T00:00:00+00:00",
       "status": "COMPLETED"
     },
     "last_opening": null,
-    "latest_ingested_at": "2026-09-14T17:45:23.126422+00:00",
+    "latest_ingested_at": "2000-01-01T00:00:00+00:00",
     "live_runs": [
       {
-        "data_as_of": "2026-09-14T17:45:23.139112+00:00",
+        "data_as_of": "2000-01-01T00:00:00+00:00",
         "detail": {
           "ingest_failures": [],
           "integrity_errors": {},
@@ -62,12 +62,12 @@
           "orders": 1
         },
         "kind": "LIVE",
-        "run_id": "528de4a2-65db-46f5-ae9b-694918b6ed2f",
-        "started_at": "2026-09-14T17:45:23.123474+00:00",
+        "run_id": "00000000-0000-4000-8000-000000000017",
+        "started_at": "2000-01-01T00:00:00+00:00",
         "status": "COMPLETED"
       },
       {
-        "data_as_of": "2026-09-14T17:45:22.838773+00:00",
+        "data_as_of": "2000-01-01T00:00:00+00:00",
         "detail": {
           "ingest_failures": [],
           "integrity_errors": {},
@@ -76,12 +76,12 @@
           "orders": 0
         },
         "kind": "LIVE",
-        "run_id": "0e2edeca-8831-4e41-8680-3a083a268560",
-        "started_at": "2026-09-14T17:45:22.837624+00:00",
+        "run_id": "00000000-0000-4000-8000-000000000018",
+        "started_at": "2000-01-01T00:00:00+00:00",
         "status": "COMPLETED"
       },
       {
-        "data_as_of": "2026-09-14T17:45:22.802035+00:00",
+        "data_as_of": "2000-01-01T00:00:00+00:00",
         "detail": {
           "ingest_failures": [],
           "integrity_errors": {},
@@ -90,12 +90,12 @@
           "orders": 2
         },
         "kind": "LIVE",
-        "run_id": "e1634d05-20ad-48e0-93de-a7f22cf7ef31",
-        "started_at": "2026-09-14T17:45:22.794840+00:00",
+        "run_id": "00000000-0000-4000-8000-000000000011",
+        "started_at": "2000-01-01T00:00:00+00:00",
         "status": "COMPLETED"
       },
       {
-        "data_as_of": "2026-09-14T17:45:22.772854+00:00",
+        "data_as_of": "2000-01-01T00:00:00+00:00",
         "detail": {
           "ingest_failures": [],
           "integrity_errors": {},
@@ -104,12 +104,12 @@
           "orders": 2
         },
         "kind": "LIVE",
-        "run_id": "4bcce9e2-4598-423d-aaa9-6f32d3f33767",
-        "started_at": "2026-09-14T17:45:22.766780+00:00",
+        "run_id": "00000000-0000-4000-8000-000000000010",
+        "started_at": "2000-01-01T00:00:00+00:00",
         "status": "COMPLETED"
       },
       {
-        "data_as_of": "2026-09-14T17:45:22.734109+00:00",
+        "data_as_of": "2000-01-01T00:00:00+00:00",
         "detail": {
           "ingest_failures": [],
           "integrity_errors": {},
@@ -118,8 +118,8 @@
           "orders": 2
         },
         "kind": "LIVE",
-        "run_id": "7eec4e31-5edd-422c-8706-1565d99b94a3",
-        "started_at": "2026-09-14T17:45:22.720536+00:00",
+        "run_id": "00000000-0000-4000-8000-000000000009",
+        "started_at": "2000-01-01T00:00:00+00:00",
         "status": "COMPLETED"
       }
     ],

@@ -199,6 +199,7 @@ def test_portfolio_views_never_mix_real_and_virtual():
     assert real_portfolio_message({"available": False, "reason": "SOURCE_UNAVAILABLE", "error": "RuntimeError"}) == (
         "Portfólio real indisponível (SOURCE_UNAVAILABLE: RuntimeError).")
     assert real_portfolio_message({"available": True, "positions": []}) is None
+    assert real_portfolio_message({"available": False}) == "Portfólio real indisponível (motivo não informado)."
 
 
 def test_pressure_display_always_carries_method_and_disclaimer():

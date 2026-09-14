@@ -1,10 +1,24 @@
 """D57: the dashboard's view of the API. A recorded session is walked through the real routes, and the JSON shape of
 every response the dashboard reads is compared with dashboard/tests/fixtures/api/<name>.json. With
 DASHBOARD_CONTRACT_RECORD=1 the responses are written as those fixtures instead; the dashboard project then asserts
-its client, view-models and figures against them. The engine never imports the dashboard (D56)."""
+its client, view-models and figures against them. The engine never imports the dashboard (D56).
+
+Fixtures are normalized before writing (and the same normalization is applied before comparing): real run ids,
+batch ids and other server-generated UUIDs are replaced by a stable placeholder numbered in first-seen order (the
+mapping is shared across every file recorded in one run, so joins such as replay_pairs still line up); any
+timestamp the API stamped with the real wall clock (data_as_of, started_at, latest_ingested_at, observed_at,
+recorded_at, and the alert outbox's created_at/last_attempted_at) is replaced by a fixed sentinel, while timestamps
+that come from the fake clock or the scenario itself (bar ts, order/signal created_at, valid_until_ts, ...) all fall
+on the scenario's own calendar months and are left untouched; and every `*_hash` field (payload_hash,
+selected_data_hash, ...) is pinned to a fixed placeholder too, because those hashes are computed server-side over
+material that includes a bar batch id (marketdata/asof.py's selected_data_hash, core/domain/models.py's
+Event.hash_material) which is itself a random id never echoed back verbatim in any response we can normalize by
+value — they are only ever shape-checked (a fixed-length hex string), never compared by value. This keeps two
+consecutive recordings byte-identical."""
 
 import json
 import os
+import re
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -23,6 +37,77 @@ NEXT = "2025-11-26"
 # Subtrees whose keys depend on the event type, cause code or review reason by design: compared as opaque values.
 OPAQUE = frozenset({"detail", "payload", "config_snapshot", "reasons", "needs_review", "missing_runs"})
 WILDCARDS = frozenset({"null", "opaque"})
+
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# Any ISO date/timestamp, with the year-month captured so it can be checked against the scenario's own calendar.
+_TIMESTAMP_RE = re.compile(r"^(?P<month>\d{4}-\d{2})-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2}))?$")
+# The recorded scenario only ever produces business dates in these months (DAY/NEXT plus the valid_until horizon a
+# few trading sessions later); anything outside them is the real wall clock the test happened to run on.
+_SCENARIO_MONTHS = frozenset({"2025-11", "2025-12"})
+_TIMESTAMP_SENTINEL = "2000-01-01T00:00:00+00:00"
+_HASH_SENTINEL = "0" * 64
+
+
+class Normalizer:
+    """Replaces server-generated UUIDs, wall-clock timestamps and non-reproducible hashes with stable placeholders."""
+
+    def __init__(self) -> None:
+        self.uuid_map: dict[str, str] = {}
+
+    def _uuid_placeholder(self, value: str) -> str:
+        if value not in self.uuid_map:
+            self.uuid_map[value] = f"00000000-0000-4000-8000-{len(self.uuid_map) + 1:012d}"
+        return self.uuid_map[value]
+
+    def _string(self, value: str) -> str:
+        if _UUID_RE.match(value):
+            return self._uuid_placeholder(value)
+        match = _TIMESTAMP_RE.match(value)
+        if match and match.group("month") not in _SCENARIO_MONTHS:
+            return _TIMESTAMP_SENTINEL
+        return value
+
+    def apply(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: (_HASH_SENTINEL if key.endswith("_hash") and isinstance(item, str) else self.apply(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self.apply(item) for item in value]
+        if isinstance(value, str):
+            return self._string(value)
+        return value
+
+
+def _canonicalize(name: str, body: Any) -> Any:
+    """Two of the scenario's positions tie on GET /portfolio/virtual's primary sort key (both AAPL), and the
+    readmodel breaks the tie with the row's own random order_id (readmodels/portfolio.py: `ORDER BY g.ticker,
+    o.id`), so the API itself may list them in either order from one run to the next. Re-sort here by a business
+    key that IS stable across runs (ticker, then origin), so the fixture -- and the first-seen numbering the
+    Normalizer assigns to the UUIDs inside it -- does not depend on that random tiebreak. This does not touch
+    what the test asserts against the live API: only what gets written to/compared against the fixture file."""
+    if name == "portfolio_virtual":
+        positions = sorted(body["portfolio"]["positions"], key=lambda p: (p["position"]["ticker"], p["position"]["origin"]))
+        return {**body, "portfolio": {**body["portfolio"], "positions": positions}}
+    return body
+
+
+def _dump_json(value: Any) -> str:
+    """Pretty JSON that keeps Decimal values as the exact number text the API sent (never rounded through float)."""
+    markers: dict[str, str] = {}
+
+    def default(obj: Any) -> str:
+        if isinstance(obj, Decimal):
+            marker = f"__decimal_{len(markers)}__"
+            markers[marker] = format(obj, "f")
+            return marker
+        raise TypeError(f"not JSON serializable: {type(obj).__name__}")
+
+    text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=default)
+    for marker, number in markers.items():
+        text = text.replace(f'"{marker}"', number)
+    return text
 
 
 def shape(value: Any, key: str | None = None) -> Any:
@@ -63,6 +148,10 @@ def differences(expected: Any, actual: Any, path: str = "$") -> list[str]:
 class Recorder:
     def __init__(self) -> None:
         self.names: list[str] = []
+        # One Normalizer for the whole recording run: the uuid_map is shared across every fixture file, so the
+        # same server-generated id (e.g. an order_id joined between orders.json and orders_replay.json) always
+        # gets the same placeholder no matter which response it first turns up in.
+        self.normalizer = Normalizer()
 
     def check(self, name: str, response: Any) -> Any:
         assert response.status_code in (200, 503), (name, response.status_code, response.text)
@@ -71,12 +160,13 @@ class Recorder:
         path = FIXTURES / f"{name}.json"
         if RECORD:
             FIXTURES.mkdir(parents=True, exist_ok=True)
-            pretty = json.dumps(json.loads(response.text), indent=2, sort_keys=True, ensure_ascii=False)
-            path.write_text(pretty + "\n", encoding="utf-8")
+            normalized = self.normalizer.apply(_canonicalize(name, body))
+            path.write_text(_dump_json(normalized) + "\n", encoding="utf-8")
             return body
         assert path.exists(), f"missing {path}: record it with DASHBOARD_CONTRACT_RECORD=1 (D57)"
         expected = shape(json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal))
-        assert differences(expected, shape(body)) == [], name
+        actual = shape(self.normalizer.apply(_canonicalize(name, body)))
+        assert differences(expected, actual) == [], name
         return body
 
 

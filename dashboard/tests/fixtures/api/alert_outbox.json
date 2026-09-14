@@ -2,11 +2,11 @@
   "alerts": [
     {
       "alert_key": "contract-alert",
-      "created_at": "2026-09-14T17:45:23.208286+00:00",
+      "created_at": "2000-01-01T00:00:00+00:00",
       "failures": 1,
       "id": 1,
       "kind": "PRICE_CROSS",
-      "last_attempted_at": "2026-09-14T17:45:23.209962+00:00",
+      "last_attempted_at": "2000-01-01T00:00:00+00:00",
       "last_error_type": null,
       "last_outcome": "EXPIRED",
       "last_status_code": null,

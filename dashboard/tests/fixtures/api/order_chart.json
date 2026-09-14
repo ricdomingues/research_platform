@@ -50,7 +50,7 @@
       "type": "TARGET2_HIT"
     }
   ],
-  "order_id": "45d9621a-49a8-4572-9625-64281d70fff8",
+  "order_id": "00000000-0000-4000-8000-000000000001",
   "origin": "AUTO_STRATEGY",
   "price_source": "fake_feed",
   "replay": false,

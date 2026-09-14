@@ -1,5 +1,5 @@
 {
-  "data_as_of": "2026-09-14T17:45:22.761417+00:00",
+  "data_as_of": "2000-01-01T00:00:00+00:00",
   "kind": "VIRTUAL",
   "portfolio": {
     "basis": "PER_1R_NORMALIZED",
@@ -17,8 +17,8 @@
           "frozen": false,
           "last_close": "103",
           "last_close_ts": "2025-11-25T15:29:00+00:00",
-          "order_id": "2786373b-c6b6-4b14-b8c0-8930539b1a65",
-          "origin": "MANUAL_USER",
+          "order_id": "00000000-0000-4000-8000-000000000001",
+          "origin": "AUTO_STRATEGY",
           "qty_open": "25",
           "realized_pnl": "0",
           "risk_amount": "100",
@@ -42,8 +42,8 @@
           "frozen": false,
           "last_close": "103",
           "last_close_ts": "2025-11-25T15:29:00+00:00",
-          "order_id": "45d9621a-49a8-4572-9625-64281d70fff8",
-          "origin": "AUTO_STRATEGY",
+          "order_id": "00000000-0000-4000-8000-000000000002",
+          "origin": "MANUAL_USER",
           "qty_open": "25",
           "realized_pnl": "0",
           "risk_amount": "100",

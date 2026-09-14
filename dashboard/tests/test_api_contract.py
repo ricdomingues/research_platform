@@ -63,7 +63,7 @@ def test_overview_cards_curve_and_comparison_from_recorded_metrics():
     summary = load("metrics")["groups"][0]["summary"]
     cards = {card.label: card.value for card in metric_cards(summary)}
     assert (cards["Trades"], cards["Win rate"], cards["Expectância (R)"]) == ("2", "100.0%", "+1.75R")
-    assert isinstance(summary_warnings(summary), list)
+    assert summary_warnings(summary) == ["Amostra insuficiente (menos de 30 trades)."]
     assert review_exclusion_text(summary).startswith("Excluídas por revisão: ")
     by_origin = {row["Grupo"]: row["Trades"] for row in comparison_rows(load("metrics_by_origin")["groups"])}
     assert by_origin == {"AUTO_STRATEGY": "1", "MANUAL_USER": "1"}
@@ -106,7 +106,10 @@ def test_market_portfolio_watchlist_comparison_and_health_from_recorded_response
     pairs = replay_pairs(orders, load("orders_replay")["orders"])
     assert len(pairs) == 2 and {pair["Diferença (R)"] for pair in pairs} == {"+0.00R"}
     view = health_view(load("health"))
-    assert view.state in {"HEALTHY", "DEGRADED", "UNHEALTHY"} and view.frozen_orders == 0
+    assert view.state == "DEGRADED" and view.frozen_orders == 0
+    assert [cause["Código"] for cause in view.causes] == [
+        "OPENING_MISSING", "NEEDS_REVIEW_QUEUE", "UNDELIVERABLE_ALERTS"]
+    assert "1 alerta(s) expirado(s) sem entrega nos últimos 7 dias (n8n fora do caminho crítico)." in view.info_notices
     overview = load("quality_overview")
     assert {"2025-11-25", "2025-11-26"} <= {row["Pregão"] for row in coverage_rows(overview)}
     assert [(row["Ticker"], row["Minutos"]) for row in gap_rows(overview)] == [("MSFT", "35")]

@@ -397,8 +397,9 @@ def real_portfolio_message(payload: Mapping[str, Any]) -> str | None:
     reason = payload.get("reason")
     if reason == "PHASE_0_PENDING":
         return REAL_PHASE_0_MESSAGE
+    reason_text = str(reason) if reason else "motivo não informado"
     error = payload.get("error")
-    return f"Portfólio real indisponível ({reason}{': ' + str(error) if error else ''})."
+    return f"Portfólio real indisponível ({reason_text}{': ' + str(error) if error else ''})."
 
 
 def real_portfolio_rows(payload: Mapping[str, Any]) -> list[dict[str, str]]:
