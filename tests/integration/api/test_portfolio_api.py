@@ -1,4 +1,6 @@
 from dataclasses import replace
+from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
@@ -6,6 +8,7 @@ from tests.integration.support import API_KEY, CODE_VERSION, DAY, post_json, sce
 from tests.support import et
 from virtual_orders.api.app import create_app
 from virtual_orders.evaluator.cycle import run_live_cycle
+from virtual_orders.portfolio.sources import RealPosition
 
 
 def cycle(api, hm):
@@ -53,3 +56,29 @@ def test_a_failing_real_source_reports_only_its_type(api):
     assert response.json() == {"kind": "REAL", "available": False, "reason": "SOURCE_UNAVAILABLE",
                                "source": "fake_broker", "error": "RuntimeError", "positions": []}
     assert "secret-value" not in response.text
+
+
+def test_a_working_real_source_reports_its_positions_and_never_mixes_totals_with_virtual(api):
+    post_json(api.client, "/signals", signal_body())
+    api.bars.load(scenario_bars())
+    cycle(api, "10:30")  # AAPL filled and open: the virtual portfolio now carries its own totals
+
+    class WorkingBroker:
+        name = "fake_broker"
+
+        def list_positions(self):
+            return [RealPosition(ticker="MSFT", quantity=Decimal("10"), average_cost=Decimal("150.25"),
+                                 market_value=Decimal("1602.50"), as_of=datetime(2025, 11, 25, 15, 30, tzinfo=UTC))]
+
+    services = replace(api.services, portfolio_source=WorkingBroker())
+    with TestClient(create_app(services), headers={"X-API-Key": API_KEY}) as client:
+        real = client.get("/portfolio/real").json()
+        virtual = client.get("/portfolio/virtual").json()
+
+    # Exact keys and Decimal/datetime serialization that the dashboard's real_portfolio_rows relies on (D46, T8).
+    assert real == {"kind": "REAL", "available": True, "reason": None, "source": "fake_broker", "positions": [
+        {"ticker": "MSFT", "quantity": "10", "average_cost": "150.25", "market_value": "1602.5",
+         "as_of": "2025-11-25T15:30:00+00:00"},
+    ]}
+    assert "totals" not in real  # the real slot never carries a total of its own, let alone a combined one
+    assert virtual["portfolio"]["totals"]["positions"] == 1  # the virtual side is unaffected by the real source
