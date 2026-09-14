@@ -221,3 +221,18 @@ def test_boundary_scan_covers_the_worker_and_alert_packages() -> None:
     assert "virtual_orders/notify/n8n.py" in ADAPTER_FILES
     assert "virtual_orders.worker" in APPLICATION_LAYER
     assert importlib.util.find_spec("apscheduler") is not None
+    worker = {_rel(p) for p in _worker_files()}
+    assert {
+        "virtual_orders/worker/schedule.py", "virtual_orders/worker/jobs.py", "virtual_orders/worker/runner.py",
+        WORKER_ENTRYPOINT,
+    } <= worker
+    assert {
+        "virtual_orders/alerts/outbox.py", "virtual_orders/alerts/watch.py", "virtual_orders/alerts/health_watch.py",
+        "virtual_orders/analytics/pressure.py", "virtual_orders/evaluator/recheck.py",
+        "virtual_orders/readmodels/quality.py",
+    } <= neutral
+    assert all((SRC / relative).exists() for relative in PLATFORM_PURE_MODULES)
+    assert (SRC / "virtual_orders/notify/n8n.py").exists()
+    assert "virtual_orders.notify.n8n" in _imported_modules(SRC / COMPOSITION_ROOT)
+    assert "virtual_orders.bootstrap" in _imported_modules(SRC / WORKER_ENTRYPOINT)
+    assert "virtual_orders/api/routes/watchlist.py" in {_rel(p) for p in _api_files()}
