@@ -19,7 +19,7 @@ CORE_ALLOWED = {"core/marketdata/nyse_calendar.py": {"pandas_market_calendars"}}
 
 NEUTRAL_PACKAGES = [
     "virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator", "virtual_orders/readmodels",
-    "virtual_orders/alerts", "virtual_orders/analytics",
+    "virtual_orders/alerts", "virtual_orders/analytics", "virtual_orders/portfolio",
 ]
 NEUTRAL_MARKETDATA = [
     "virtual_orders/marketdata/sources.py", "virtual_orders/marketdata/gateway.py",
@@ -302,3 +302,11 @@ def test_boundary_scan_covers_the_dashboard_project() -> None:
         assert f'name = "{library}"' not in root_lock, library  # D56: UI libraries never enter the engine lock
         assert importlib.util.find_spec(library) is None, library
     assert "core" in DASHBOARD_FORBIDDEN and "virtual_orders" in DASHBOARD_FORBIDDEN
+
+
+def test_real_portfolio_is_a_read_only_contract_without_any_adapter() -> None:
+    from virtual_orders.portfolio.sources import PortfolioSource
+
+    assert {name for name in vars(PortfolioSource) if not name.startswith("_")} == {"list_positions"}
+    assert not any("robinhood" in path.name.lower() for path in _platform_files())
+    assert not any(_matches(name, "mcp") for path in _platform_files() for name in _imported_modules(path))
