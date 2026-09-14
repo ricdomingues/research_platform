@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14",
+    "apscheduler>=3.11,<4",
     "fastapi>=0.141",
     "httpx>=0.28",
     "numpy>=2.0",
@@ -94,5 +95,8 @@ module = "core.fills.v1.engine"
 disable_error_code = ["operator", "type-var", "arg-type", "assignment"]
 
 [[tool.mypy.overrides]]
-module = ["pandas_market_calendars", "pandas_market_calendars.*", "yfinance", "yfinance.*"]
+module = [
+    "pandas_market_calendars", "pandas_market_calendars.*", "yfinance", "yfinance.*",
+    "apscheduler", "apscheduler.*",
+]
 ignore_missing_imports = true

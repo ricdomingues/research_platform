@@ -18,6 +18,7 @@ CORE_ALLOWED = {"core/marketdata/nyse_calendar.py": {"pandas_market_calendars"}}
 
 NEUTRAL_PACKAGES = [
     "virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator", "virtual_orders/readmodels",
+    "virtual_orders/alerts", "virtual_orders/analytics",
 ]
 NEUTRAL_MARKETDATA = [
     "virtual_orders/marketdata/sources.py", "virtual_orders/marketdata/gateway.py",
@@ -27,6 +28,7 @@ NEUTRAL_MARKETDATA = [
 PROVIDER_ADAPTERS = (
     "virtual_orders.marketdata.alpaca", "virtual_orders.marketdata.fmp",
     "virtual_orders.marketdata.yfinance_source", "virtual_orders.marketdata.http",
+    "virtual_orders.notify.n8n",
 )
 PROVIDER_LIBRARIES = ("httpx", "yfinance", "pandas")
 
@@ -34,11 +36,25 @@ COMPOSITION_ROOT = "virtual_orders/bootstrap.py"
 ADAPTER_FILES = frozenset({
     "virtual_orders/marketdata/alpaca.py", "virtual_orders/marketdata/fmp.py",
     "virtual_orders/marketdata/yfinance_source.py", "virtual_orders/marketdata/http.py",
+    "virtual_orders/notify/n8n.py",
 })
 APPLICATION_LAYER = (
-    "virtual_orders.api", "virtual_orders.bootstrap", "virtual_orders.config", "fastapi", "starlette", "uvicorn",
+    "virtual_orders.api", "virtual_orders.bootstrap", "virtual_orders.config", "virtual_orders.worker",
+    "fastapi", "starlette", "uvicorn",
 )
 APPLICATION_NEUTRAL = ("virtual_orders/services.py", "virtual_orders/config.py")
+WORKER_PACKAGE = "virtual_orders/worker"
+WORKER_ENTRYPOINT = "virtual_orders/worker/__main__.py"
+PLATFORM_PURE_MODULES = ["virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py"]
+PLATFORM_INFRASTRUCTURE = (
+    "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
+    "virtual_orders.marketdata", "virtual_orders.api", "virtual_orders.worker", "virtual_orders.bootstrap",
+    "virtual_orders.config", "virtual_orders.services", "virtual_orders.notify",
+)
+
+
+def _worker_files() -> list[Path]:
+    return sorted((SRC / WORKER_PACKAGE).rglob("*.py"))
 
 
 def _rel(path: Path) -> str:
@@ -175,3 +191,33 @@ def test_boundary_scan_covers_the_application_layer() -> None:
     assert all((SRC / relative).exists() for relative in APPLICATION_NEUTRAL)
     assert (SRC / COMPOSITION_ROOT).exists()
     assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
+
+
+@pytest.mark.parametrize("path", _worker_files(), ids=_rel)
+def test_worker_never_imports_adapters_provider_libraries_or_the_http_layer(path: Path) -> None:
+    assert _offending(
+        path, PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + ("virtual_orders.api", "fastapi", "starlette", "uvicorn"),
+    ) == []
+
+
+@pytest.mark.parametrize("path", [p for p in _worker_files() if _rel(p) != WORKER_ENTRYPOINT], ids=_rel)
+def test_only_the_worker_entrypoint_imports_the_composition_root(path: Path) -> None:
+    assert _offending(path, ("virtual_orders.bootstrap", "virtual_orders.config")) == []
+
+
+def test_platform_pure_modules_have_no_io_or_infrastructure_imports() -> None:
+    # Not parametrized on purpose: until Tasks 11 and 13 create the modules an empty parameter set would be
+    # reported as a skip, and every full run must be skip-free. Task 17 pins that both files exist.
+    existing = [SRC / relative for relative in PLATFORM_PURE_MODULES if (SRC / relative).exists()]
+    assert {_rel(path): _offending(path, IO_LIBRARIES + PLATFORM_INFRASTRUCTURE) for path in existing} == {
+        _rel(path): [] for path in existing
+    }
+
+
+def test_boundary_scan_covers_the_worker_and_alert_packages() -> None:
+    assert "virtual_orders/worker/__init__.py" in {_rel(p) for p in _worker_files()}
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {"virtual_orders/alerts/__init__.py", "virtual_orders/analytics/__init__.py"} <= neutral
+    assert "virtual_orders/notify/n8n.py" in ADAPTER_FILES
+    assert "virtual_orders.worker" in APPLICATION_LAYER
+    assert importlib.util.find_spec("apscheduler") is not None
