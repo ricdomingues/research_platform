@@ -7,7 +7,8 @@ import pytest
 from tests.support import et
 from virtual_orders.alerts import outbox
 from virtual_orders.alerts.watch import WATCH_GRACE, watch_session
-from virtual_orders.readmodels import health
+from virtual_orders.analytics import vwap
+from virtual_orders.readmodels import health, market
 from virtual_orders.worker.schedule import LIVE_WINDOW_GRACE, MARKET_TZ, build_schedule, live_session
 
 
@@ -27,3 +28,8 @@ def test_duplicated_window_constants_stay_equal():
     retry = end_of_day.get_next_fire_time(None, datetime(2025, 11, 25, 17, 0, tzinfo=MARKET_TZ))
     assert retry.time() == time(18, 30)
     assert health.END_OF_DAY_FLOOR == (datetime.combine(date(2025, 11, 25), retry.time()) + timedelta(minutes=30)).time()
+
+
+def test_3c_market_zone_copies_stay_equal():
+    # D50 (M3) extended to the Plan 3C copies: neutral modules keep their own ET zone instead of importing the worker.
+    assert vwap._MARKET_TZ == market._MARKET_TZ == health._MARKET_TZ == MARKET_TZ
