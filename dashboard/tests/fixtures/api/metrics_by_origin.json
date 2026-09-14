@@ -1,0 +1,67 @@
+{
+  "from": null,
+  "group_by": "origin",
+  "groups": [
+    {
+      "key": "AUTO_STRATEGY",
+      "summary": {
+        "avg_duration_seconds": 9900.0,
+        "avg_mae_r": -0.125,
+        "avg_mfe_r": 2.375,
+        "avg_r": 1.75,
+        "drawdown_sequence_risk": null,
+        "excluded_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "execution_rate": 1.0,
+        "expectancy_ci": null,
+        "expectancy_r": 1.75,
+        "included_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "max_drawdown_r": 0.0,
+        "profit_factor": null,
+        "trades": 1,
+        "warnings": [
+          "INSUFFICIENT_SAMPLE"
+        ],
+        "win_rate": 1.0,
+        "win_rate_ci": null
+      }
+    },
+    {
+      "key": "MANUAL_USER",
+      "summary": {
+        "avg_duration_seconds": 9900.0,
+        "avg_mae_r": -0.125,
+        "avg_mfe_r": 2.375,
+        "avg_r": 1.75,
+        "drawdown_sequence_risk": null,
+        "excluded_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "execution_rate": 1.0,
+        "expectancy_ci": null,
+        "expectancy_r": 1.75,
+        "included_needs_review": {
+          "count": 0,
+          "reasons": {}
+        },
+        "max_drawdown_r": 0.0,
+        "profit_factor": null,
+        "trades": 1,
+        "warnings": [
+          "INSUFFICIENT_SAMPLE"
+        ],
+        "win_rate": 1.0,
+        "win_rate_ci": null
+      }
+    }
+  ],
+  "include_needs_review": false,
+  "replay": false,
+  "to": null
+}

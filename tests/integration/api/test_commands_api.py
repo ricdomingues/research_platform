@@ -4,7 +4,6 @@ from uuid import UUID, uuid4
 import pytest
 
 from core.domain.models import FillConfig, Origin
-from tests.integration.api.conftest import post_json
 from tests.integration.support import (
     CODE_VERSION,
     DAY,
@@ -13,6 +12,7 @@ from tests.integration.support import (
     TICKER,
     backdated_batch,
     count,
+    post_json,
     raw,
     scenario_bars,
     signal_body,

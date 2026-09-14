@@ -1,0 +1,24 @@
+{
+  "available": true,
+  "cmf_threshold": "0.01",
+  "data_as_of": "2000-01-01T00:00:00+00:00",
+  "disclaimer": "Estimate derived from 1-minute OHLCV bars; it is not order-flow or trade-side data.",
+  "estimate": true,
+  "method": "OHLCV_PRESSURE_ESTIMATE_V1",
+  "price_source": "fake_feed",
+  "reason": null,
+  "side": "BUY",
+  "ticker": "AAPL",
+  "values": {
+    "bars": 30,
+    "chaikin_money_flow": "0.0137",
+    "close_location_value": "0.4118",
+    "first_bar_ts": "2025-11-25T17:21:00+00:00",
+    "last_bar_ts": "2025-11-25T17:50:00+00:00",
+    "method": "OHLCV_PRESSURE_ESTIMATE_V1",
+    "obv_slope": "0.0345",
+    "vwap": "107.0922",
+    "vwap_distance_pct": "2.7152"
+  },
+  "window_bars": 30
+}

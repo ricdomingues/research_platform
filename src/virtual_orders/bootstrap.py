@@ -80,6 +80,7 @@ def build_services(
         clock=clock or _utc_now,
         close=close,
         alert_sink=alert_sink,
+        portfolio_source=None,  # D46: no adapter until the roadmap Phase 0 report approves one
     )
 
 

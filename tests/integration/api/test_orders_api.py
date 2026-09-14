@@ -1,7 +1,6 @@
 from uuid import UUID, uuid4
 
-from tests.integration.api.conftest import post_json
-from tests.integration.support import CODE_VERSION, DAY, scenario_bars, signal_body
+from tests.integration.support import CODE_VERSION, DAY, post_json, scenario_bars, signal_body
 from tests.support import et
 from virtual_orders.evaluator.commands import flag_order_review
 from virtual_orders.evaluator.cycle import run_live_cycle

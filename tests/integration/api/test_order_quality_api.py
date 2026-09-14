@@ -1,8 +1,7 @@
 from datetime import date
 from uuid import UUID
 
-from tests.integration.api.conftest import post_json
-from tests.integration.support import CODE_VERSION, DAY, FakeReference, scenario_bars, signal_body
+from tests.integration.support import CODE_VERSION, DAY, FakeReference, post_json, scenario_bars, signal_body
 from tests.support import et
 from virtual_orders.evaluator.quality import run_end_of_day
 

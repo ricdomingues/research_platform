@@ -1,0 +1,85 @@
+# Production stack (spec 2.1, Plan 3C D47/D48/D56/D58). Copy .env.example to .env first; never commit .env.
+# Build and start with GIT_SHA exported (runbook): the engine image is built once, by migrate.
+name: virtual-order-engine
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: virtual-order-engine:${GIT_SHA:-local}
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}  # M12: migrations need nothing else
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: virtual-order-engine:${GIT_SHA:-local}
+    pull_policy: never
+    command: ["uvicorn", "virtual_orders.bootstrap:app_from_environment", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # D48: GET /health with the key read inside the container; 503 (database or schema) fails the check.
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/health', headers={'X-API-Key': os.environ['API_KEY']}), timeout=8)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: virtual-order-engine:${GIT_SHA:-local}
+    pull_policy: never
+    command: ["python", "-m", "virtual_orders.worker", "run"]
+    env_file: .env
+    restart: unless-stopped  # exit 2 (invalid config OR another worker holds the lock -- check `docker compose logs worker`
+                             # for CONFIG_INVALID), 3 (lock lost, D39) and 4 (database down at start, D49) all restart
+    stop_signal: SIGTERM
+    stop_grace_period: 150s  # an end-of-day or recheck in progress finishes on SIGTERM (D20)
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: virtual-order-engine-dashboard:${GIT_SHA:-local}
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true", "--browser.gatherUsageStats", "false", "--client.showErrorDetails", "none"]
+    environment:
+      DASHBOARD_API_URL: http://api:8000
+      API_KEY: ${API_KEY:?API_KEY is required}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"  # D59: no Streamlit auth; reach it through an SSH tunnel
+    depends_on:
+      api:
+        condition: service_started  # D58: an API outage shows "API indisponível", never a dashboard that never starts
+
+volumes:
+  pgdata:

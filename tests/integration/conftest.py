@@ -9,13 +9,12 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.integration.support import alembic_config
 from virtual_orders.storage.database import make_engine
 
-ROOT = Path(__file__).resolve().parents[2]
 ADMIN_URL = os.environ.get(
     "TEST_DATABASE_ADMIN_URL", "postgresql+psycopg://vo:vo@127.0.0.1:55432/postgres"
 )
@@ -30,13 +29,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def _admin() -> Engine:
     return create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
-
-
-def alembic_config(url: str) -> Config:
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", url)
-    return config
 
 
 @pytest.fixture(scope="session")

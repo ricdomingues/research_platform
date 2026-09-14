@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+ROOT = SRC.parent
 
 PURE_PACKAGES = ["core/domain", "core/fills", "core/metrics"]
 PURE_MODULES = ["core/actionability.py", "core/dataquality.py"]
@@ -18,7 +19,7 @@ CORE_ALLOWED = {"core/marketdata/nyse_calendar.py": {"pandas_market_calendars"}}
 
 NEUTRAL_PACKAGES = [
     "virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator", "virtual_orders/readmodels",
-    "virtual_orders/alerts", "virtual_orders/analytics",
+    "virtual_orders/alerts", "virtual_orders/analytics", "virtual_orders/portfolio",
 ]
 NEUTRAL_MARKETDATA = [
     "virtual_orders/marketdata/sources.py", "virtual_orders/marketdata/gateway.py",
@@ -45,7 +46,10 @@ APPLICATION_LAYER = (
 APPLICATION_NEUTRAL = ("virtual_orders/services.py", "virtual_orders/config.py")
 WORKER_PACKAGE = "virtual_orders/worker"
 WORKER_ENTRYPOINT = "virtual_orders/worker/__main__.py"
-PLATFORM_PURE_MODULES = ["virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py"]
+PLATFORM_PURE_MODULES = [
+    "virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py",
+    "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+]
 PLATFORM_INFRASTRUCTURE = (
     "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
     "virtual_orders.marketdata", "virtual_orders.api", "virtual_orders.worker", "virtual_orders.bootstrap",
@@ -236,3 +240,101 @@ def test_boundary_scan_covers_the_worker_and_alert_packages() -> None:
     assert "virtual_orders.notify.n8n" in _imported_modules(SRC / COMPOSITION_ROOT)
     assert "virtual_orders.bootstrap" in _imported_modules(SRC / WORKER_ENTRYPOINT)
     assert "virtual_orders/api/routes/watchlist.py" in {_rel(p) for p in _api_files()}
+
+
+def _root_test_files() -> list[Path]:
+    return sorted((ROOT / "tests").rglob("*.py"))
+
+
+def test_no_module_imports_a_conftest() -> None:
+    # Plan 3B close-out entry 20: a conftest imported as a plain module can be registered out of order when test
+    # files from different directories share one pytest call. Shared helpers live in tests/integration/support.py.
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(name for name in _imported_modules(path) if name.endswith(".conftest"))
+        for path in _root_test_files()
+    }
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+
+
+DASHBOARD_PROJECT = ROOT / "dashboard"
+DASHBOARD_SOURCES = ("dashboard", "tests")  # never dashboard/.venv: that is Streamlit's own site-packages
+DASHBOARD_FORBIDDEN = (
+    "core", "virtual_orders", "tests", "sqlalchemy", "psycopg", "alembic", "yfinance", "pandas_market_calendars",
+    "apscheduler", "fastapi", "starlette", "uvicorn",
+)
+UI_LIBRARIES = ("dashboard", "streamlit", "plotly")
+
+
+def _dashboard_files() -> list[Path]:
+    files: list[Path] = []
+    for folder in DASHBOARD_SOURCES:
+        if (DASHBOARD_PROJECT / folder).exists():
+            files.extend(sorted((DASHBOARD_PROJECT / folder).rglob("*.py")))
+    return files
+
+
+def _dashboard_rel(path: Path) -> str:
+    return str(path.relative_to(ROOT))
+
+
+@pytest.mark.parametrize("path", _dashboard_files(), ids=_dashboard_rel)
+def test_dashboard_talks_to_the_platform_only_over_http(path: Path) -> None:
+    assert _offending(path, DASHBOARD_FORBIDDEN) == []
+
+
+@pytest.mark.parametrize("path", _platform_files() + _core_files(), ids=_rel)
+def test_platform_and_core_never_import_the_dashboard_or_ui_libraries(path: Path) -> None:
+    assert _offending(path, UI_LIBRARIES) == []
+
+
+def test_root_tests_never_import_the_dashboard_or_ui_libraries() -> None:
+    # D57: the API/dashboard contract crosses projects as recorded JSON fixtures, never as an import.
+    offenders = {_dashboard_rel(path): _offending(path, UI_LIBRARIES) for path in _root_test_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+
+
+def test_boundary_scan_covers_the_dashboard_project() -> None:
+    assert "dashboard/dashboard/__init__.py" in {_dashboard_rel(p) for p in _dashboard_files()}
+    assert not any(".venv" in path.parts for path in _dashboard_files())
+    assert (DASHBOARD_PROJECT / "pyproject.toml").exists() and (DASHBOARD_PROJECT / "uv.lock").exists()
+    root_lock = (ROOT / "uv.lock").read_text()
+    for library in ("streamlit", "plotly"):
+        assert f'name = "{library}"' not in root_lock, library  # D56: UI libraries never enter the engine lock
+        assert importlib.util.find_spec(library) is None, library
+    assert "core" in DASHBOARD_FORBIDDEN and "virtual_orders" in DASHBOARD_FORBIDDEN
+
+
+def test_real_portfolio_is_a_read_only_contract_without_any_adapter() -> None:
+    from virtual_orders.portfolio.sources import PortfolioSource
+
+    assert {name for name in vars(PortfolioSource) if not name.startswith("_")} == {"list_positions"}
+    assert not any("robinhood" in path.name.lower() for path in _platform_files())
+    assert not any(_matches(name, "mcp") for path in _platform_files() for name in _imported_modules(path))
+
+
+def test_boundary_scan_covers_the_3c_modules() -> None:
+    dashboard = {_dashboard_rel(p) for p in _dashboard_files()}
+    package = "dashboard/dashboard"
+    assert {
+        f"{package}/app.py", f"{package}/client.py", f"{package}/viewmodels.py", f"{package}/charts.py",
+        f"{package}/views/common.py", f"{package}/views/overview.py", f"{package}/views/signals.py",
+        f"{package}/views/orders.py", f"{package}/views/comparison.py", f"{package}/views/health.py",
+        f"{package}/views/watchlist.py", f"{package}/views/market.py", f"{package}/views/portfolio.py",
+        "dashboard/tests/test_api_contract.py",
+    } <= dashboard
+    assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 17  # D57
+    assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/readmodels/market.py", "virtual_orders/readmodels/portfolio.py",
+        "virtual_orders/readmodels/observability.py", "virtual_orders/portfolio/sources.py",
+        "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+    } <= neutral
+    assert {"virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py"} <= set(PLATFORM_PURE_MODULES)
+    api = {_rel(p) for p in _api_files()}
+    assert {
+        "virtual_orders/api/tickers.py", "virtual_orders/api/routes/market.py",
+        "virtual_orders/api/routes/portfolio.py", "virtual_orders/api/routes/observability.py",
+    } <= api
+    assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)

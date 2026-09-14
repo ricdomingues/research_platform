@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 from collections.abc import Callable
 from types import FrameType
 from typing import Any, Protocol, cast
@@ -29,6 +30,7 @@ logger = logging.getLogger("virtual_orders.worker")
 EXIT_OK = 0
 EXIT_LOCKED = 2
 EXIT_LOCK_LOST = 3
+EXIT_DATABASE_UNAVAILABLE = 4  # D49 (M4): the database was unreachable when the worker tried to take its lock
 
 # pg_try_advisory_lock(bigint) stores the high 32 bits in classid, the low 32 bits in objid and objsubid = 1.
 _LOCK_HELD = text(
@@ -55,6 +57,17 @@ class Scheduler(Protocol):
 
 def blocking_scheduler() -> Scheduler:
     return cast(Scheduler, BlockingScheduler(timezone=MARKET_TZ))
+
+
+class ShutdownGuard:
+    """One shutdown per process (D49). `acquire(blocking=False)` is atomic across the lock-watch thread and the
+    signal handler, and a signal that interrupts a handler never blocks: the nested claim simply loses."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def claim(self) -> bool:
+        return self._lock.acquire(blocking=False)
 
 
 def acquire_worker_lock(engine: Engine) -> Connection | None:
@@ -112,9 +125,13 @@ def run_worker(
 ) -> int:
     lock: Connection | None = None
     lost = False
-    stopping = False  # T16: a second SIGTERM/SIGINT, or a signal after lock loss, must never shut down twice
+    guard = ShutdownGuard()  # T16 + D49: a second SIGTERM/SIGINT, or a signal after lock loss, never shuts down twice
     try:
-        lock = acquire_worker_lock(services.engine)
+        try:
+            lock = acquire_worker_lock(services.engine)
+        except SQLAlchemyError as exc:  # D49 (M4): one log line with the type, a distinct exit code, no traceback
+            logger.error("database unavailable at worker start: %s", type(exc).__name__)
+            return EXIT_DATABASE_UNAVAILABLE
         if lock is None:
             logger.error("another worker holds the worker lock; exiting")
             return EXIT_LOCKED
@@ -124,14 +141,13 @@ def run_worker(
         scheduler = scheduler_factory()
 
         def watch_lock() -> JobResult:
-            nonlocal lost, stopping
+            nonlocal lost
             if worker_lock_held(held):
                 return JobResult(WORKER_LOCK, True, "HELD")
             lost = True
             logger.error("worker lock lost; stopping so a second worker can never run alongside this one")
             _alert_lock_lost(services)
-            if not stopping:
-                stopping = True
+            if guard.claim():
                 scheduler.shutdown(wait=False)  # called from a job thread: never wait for itself
             return JobResult(WORKER_LOCK, False, "LOCK_LOST")
 
@@ -141,11 +157,9 @@ def run_worker(
                               max_instances=1, coalesce=True, misfire_grace_time=MISFIRE_GRACE_SECONDS)
         if install_signal_handlers:
             def stop(signum: int, frame: FrameType | None) -> None:
-                nonlocal stopping
-                if stopping:
+                if not guard.claim():
                     logger.info("signal %s received again; already shutting down", signum)
                     return  # a second signal, or one racing the lock-loss shutdown: never shut down twice
-                stopping = True
                 logger.info("signal %s received; waiting for running jobs and shutting down", signum)
                 scheduler.shutdown(wait=True)
 

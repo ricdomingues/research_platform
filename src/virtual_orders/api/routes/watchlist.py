@@ -21,18 +21,11 @@ from virtual_orders.alerts.watchlist import (
 from virtual_orders.api.deps import ServicesDep
 from virtual_orders.api.encoding import json_response, read_json_object
 from virtual_orders.api.errors import ApiError
+from virtual_orders.api.tickers import normalize_ticker
 from virtual_orders.marketdata.sources import SourceDataError, SourceUnavailable
 from virtual_orders.services import Services
 
 router = APIRouter()
-
-
-def _normalized(ticker: str) -> str:
-    """D26: stripped and upper-cased, so the result satisfies the signal rule (core TICKER_INVALID)."""
-    normalized = ticker.strip().upper()
-    if not normalized or any(character.isspace() for character in normalized):
-        raise ApiError(422, "TICKER_INVALID", detail={"ticker": ticker})
-    return normalized
 
 
 def _require_tradable(services: Services, ticker: str) -> None:
@@ -70,7 +63,7 @@ def get_watchlist(services: ServicesDep) -> Response:
 
 @router.put("/watchlist/{ticker}")
 def put_watchlist_ticker(ticker: str, services: ServicesDep) -> Response:
-    normalized = _normalized(ticker)
+    normalized = normalize_ticker(ticker)
     created = _add(services, normalized)
     return json_response({"ticker": normalized, "status": "CREATED" if created else "EXISTING"},
                          201 if created else 200)
@@ -78,7 +71,7 @@ def put_watchlist_ticker(ticker: str, services: ServicesDep) -> Response:
 
 @router.delete("/watchlist/{ticker}")
 def delete_watchlist_ticker(ticker: str, services: ServicesDep) -> Response:
-    normalized = _normalized(ticker)
+    normalized = normalize_ticker(ticker)
     with services.engine.begin() as conn:
         remove_ticker(conn, normalized)
     return json_response({"ticker": normalized, "removed": True})
@@ -86,7 +79,7 @@ def delete_watchlist_ticker(ticker: str, services: ServicesDep) -> Response:
 
 @router.post("/watchlist/{ticker}/alerts")
 async def post_alert_rule(ticker: str, request: Request, services: ServicesDep) -> Response:
-    normalized = _normalized(ticker)
+    normalized = normalize_ticker(ticker)
     body = await read_json_object(request)
     rule = await run_in_threadpool(_create, services, normalized, body)
     return json_response({"rule": rule}, 201)

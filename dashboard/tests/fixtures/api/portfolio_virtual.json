@@ -1,0 +1,69 @@
+{
+  "data_as_of": "2000-01-01T00:00:00+00:00",
+  "kind": "VIRTUAL",
+  "portfolio": {
+    "basis": "PER_1R_NORMALIZED",
+    "disclaimer": "Virtual positions sized per 1R of risk (risk_amount), not account money: no cash, limits or overlap constraints (that is the Portfolio Simulator, a separate sub-project). Unrealized P&L is gross of exit costs and stop slippage, marked at the last stored close, which can belong to an earlier session.",
+    "positions": [
+      {
+        "allocation_pct": "50",
+        "notional": "2575",
+        "open_r": "0.5",
+        "position": {
+          "avg_entry": "101",
+          "costs": "0",
+          "direction": "LONG",
+          "dividends": "0",
+          "frozen": false,
+          "last_close": "103",
+          "last_close_ts": "2025-11-25T15:29:00+00:00",
+          "order_id": "00000000-0000-4000-8000-000000000001",
+          "origin": "AUTO_STRATEGY",
+          "qty_open": "25",
+          "realized_pnl": "0",
+          "risk_amount": "100",
+          "status": "OPEN",
+          "stop_current": "97",
+          "strategy": "REXSHARE",
+          "ticker": "AAPL"
+        },
+        "unrealized_pnl": "50",
+        "unrealized_r": "0.5"
+      },
+      {
+        "allocation_pct": "50",
+        "notional": "2575",
+        "open_r": "0.5",
+        "position": {
+          "avg_entry": "101",
+          "costs": "0",
+          "direction": "LONG",
+          "dividends": "0",
+          "frozen": false,
+          "last_close": "103",
+          "last_close_ts": "2025-11-25T15:29:00+00:00",
+          "order_id": "00000000-0000-4000-8000-000000000002",
+          "origin": "MANUAL_USER",
+          "qty_open": "25",
+          "realized_pnl": "0",
+          "risk_amount": "100",
+          "status": "OPEN",
+          "stop_current": "97",
+          "strategy": "REXSHARE",
+          "ticker": "AAPL"
+        },
+        "unrealized_pnl": "50",
+        "unrealized_r": "0.5"
+      }
+    ],
+    "totals": {
+      "marked": 2,
+      "notional": "5150",
+      "positions": 2,
+      "risk_amount": "200",
+      "unmarked": 0,
+      "unrealized_pnl": "100",
+      "unrealized_r": "1"
+    }
+  }
+}

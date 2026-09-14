@@ -142,3 +142,24 @@ def test_one_failing_rule_never_stops_the_others(engine, monkeypatch):
 
     assert report.rule_errors == {str(broken.id): "ERROR:RuntimeError"}
     assert report.enqueued == (key("PRICE_CROSS", working, "10:10"),)
+
+
+def test_an_unexpected_ingest_error_is_isolated_to_its_ticker(engine):
+    class ExplodingForAapl(FakeBarSource):
+        def fetch_bars(self, ticker, start, end):
+            if ticker == "AAPL":
+                raise RuntimeError("provider-secret-text")
+            return super().fetch_bars(ticker, start, end)
+
+    fast = add_rule(engine, cross())  # MSFT, sorted after AAPL: it must still be ingested and evaluated
+    with engine.begin() as conn:
+        add_ticker(conn, "AAPL", added_at=CREATED)
+    source = ExplodingForAapl(crossing_bars())
+
+    report = cycle(engine, source, "10:30")
+
+    assert report.ingest_failures == {f"{PRICE_SOURCE}:AAPL": "ERROR:RuntimeError"}
+    assert key("PRICE_CROSS", fast, "10:00") in report.enqueued
+    with engine.connect() as conn:
+        status, detail = latest_run_status(conn, report.run_id)
+    assert status is RunStatus.COMPLETED and "provider-secret-text" not in str(detail)

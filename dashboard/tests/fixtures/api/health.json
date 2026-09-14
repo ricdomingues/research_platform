@@ -1,0 +1,143 @@
+{
+  "causes": [
+    {
+      "code": "OPENING_MISSING",
+      "detail": {
+        "session_days": [
+          "2025-11-26"
+        ]
+      },
+      "severity": "DEGRADED"
+    },
+    {
+      "code": "NEEDS_REVIEW_QUEUE",
+      "detail": {
+        "count": 1,
+        "reasons": {
+          "MISSING_BAR_UNVERIFIABLE": 1
+        }
+      },
+      "severity": "INFO"
+    },
+    {
+      "code": "UNDELIVERABLE_ALERTS",
+      "detail": {
+        "count": 1
+      },
+      "severity": "INFO"
+    }
+  ],
+  "facts": {
+    "actionability": {
+      "ACTIONABLE": 1
+    },
+    "frozen_orders": 0,
+    "incident_groups": [],
+    "incidents_total": 0,
+    "last_end_of_day": {
+      "data_as_of": "2000-01-01T00:00:00+00:00",
+      "detail": {
+        "integrity_errors": {},
+        "not_evaluated": {},
+        "order_errors": {},
+        "orders": 1,
+        "session_day": "2025-11-26",
+        "unavailable": []
+      },
+      "kind": "END_OF_DAY",
+      "run_id": "00000000-0000-4000-8000-000000000019",
+      "started_at": "2000-01-01T00:00:00+00:00",
+      "status": "COMPLETED"
+    },
+    "last_opening": null,
+    "latest_ingested_at": "2000-01-01T00:00:00+00:00",
+    "live_runs": [
+      {
+        "data_as_of": "2000-01-01T00:00:00+00:00",
+        "detail": {
+          "ingest_failures": [],
+          "integrity_errors": {},
+          "market_now": "2025-11-26T21:30:00+00:00",
+          "order_errors": {},
+          "orders": 1
+        },
+        "kind": "LIVE",
+        "run_id": "00000000-0000-4000-8000-000000000017",
+        "started_at": "2000-01-01T00:00:00+00:00",
+        "status": "COMPLETED"
+      },
+      {
+        "data_as_of": "2000-01-01T00:00:00+00:00",
+        "detail": {
+          "ingest_failures": [],
+          "integrity_errors": {},
+          "market_now": "2025-11-25T21:30:00+00:00",
+          "order_errors": {},
+          "orders": 0
+        },
+        "kind": "LIVE",
+        "run_id": "00000000-0000-4000-8000-000000000018",
+        "started_at": "2000-01-01T00:00:00+00:00",
+        "status": "COMPLETED"
+      },
+      {
+        "data_as_of": "2000-01-01T00:00:00+00:00",
+        "detail": {
+          "ingest_failures": [],
+          "integrity_errors": {},
+          "market_now": "2025-11-25T18:00:00+00:00",
+          "order_errors": {},
+          "orders": 2
+        },
+        "kind": "LIVE",
+        "run_id": "00000000-0000-4000-8000-000000000011",
+        "started_at": "2000-01-01T00:00:00+00:00",
+        "status": "COMPLETED"
+      },
+      {
+        "data_as_of": "2000-01-01T00:00:00+00:00",
+        "detail": {
+          "ingest_failures": [],
+          "integrity_errors": {},
+          "market_now": "2025-11-25T16:30:00+00:00",
+          "order_errors": {},
+          "orders": 2
+        },
+        "kind": "LIVE",
+        "run_id": "00000000-0000-4000-8000-000000000010",
+        "started_at": "2000-01-01T00:00:00+00:00",
+        "status": "COMPLETED"
+      },
+      {
+        "data_as_of": "2000-01-01T00:00:00+00:00",
+        "detail": {
+          "ingest_failures": [],
+          "integrity_errors": {},
+          "market_now": "2025-11-25T15:30:00+00:00",
+          "order_errors": {},
+          "orders": 2
+        },
+        "kind": "LIVE",
+        "run_id": "00000000-0000-4000-8000-000000000009",
+        "started_at": "2000-01-01T00:00:00+00:00",
+        "status": "COMPLETED"
+      }
+    ],
+    "missing_runs": {
+      "OPENING": [
+        "2025-11-26"
+      ]
+    },
+    "needs_review": {
+      "MISSING_BAR_UNVERIFIABLE": 1
+    },
+    "now": "2025-11-26T21:30:00+00:00",
+    "order_event_alerts_behind": 0,
+    "orders_without_projection": 0,
+    "orders_without_projection_ids": [],
+    "quality_pending": {},
+    "session_open_utc": null,
+    "undeliverable_alerts": 1
+  },
+  "state": "DEGRADED"
+}

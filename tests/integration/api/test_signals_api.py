@@ -6,8 +6,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from tests.integration.api.conftest import API_KEY, post_json
-from tests.integration.support import count, signal_body, submit_default
+from tests.integration.support import API_KEY, count, post_json, signal_body, submit_default
 from virtual_orders.api.app import create_app
 from virtual_orders.storage import tables
 

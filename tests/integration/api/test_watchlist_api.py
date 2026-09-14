@@ -1,7 +1,6 @@
 from decimal import Decimal
 
-from tests.integration.api.conftest import post_json
-from tests.integration.support import count
+from tests.integration.support import count, post_json
 
 
 def rule_body(**overrides):

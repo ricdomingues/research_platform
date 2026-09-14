@@ -2,15 +2,14 @@ from datetime import date
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
-from tests.integration.api.conftest import post_json
-from tests.integration.support import CODE_VERSION, DAY, signal_body
+from tests.integration.support import CODE_VERSION, DAY, post_json, signal_body
 from tests.support import et
 from virtual_orders.ledger.runs import RunKind, RunStatus, finish_run, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of
 from virtual_orders.readmodels import health as health_module
-from virtual_orders.readmodels.health import HealthState, build_health_report
+from virtual_orders.readmodels.health import HealthState, build_health_report, missing_job_runs
 from virtual_orders.readmodels.quality import pending_quality_sessions
 from virtual_orders.storage import tables
 
@@ -155,3 +154,24 @@ def test_without_any_opening_or_end_of_day_run_nothing_is_missing(api):
     payload = body(api)
     assert payload["facts"]["missing_runs"] == {}
     assert not {"OPENING_MISSING", "END_OF_DAY_MISSING"} & set(cause_map(payload))
+
+
+def test_missing_runs_read_only_sessions_inside_the_checked_range(api):
+    engine = api.services.engine
+    job_run(engine, RunKind.OPENING, date(2025, 10, 1))  # anchor far outside the lookback
+    job_run(engine, RunKind.END_OF_DAY, date(2025, 10, 1))
+    seen: list = []
+
+    def spy(conn, cursor, statement, parameters, context, executemany):
+        if "since_day" in statement:
+            seen.append(parameters)
+
+    event.listen(engine, "before_cursor_execute", spy)
+    try:
+        with engine.connect() as conn:
+            missing = missing_job_runs(conn, now=et("2025-11-26", "19:00"))
+    finally:
+        event.remove(engine, "before_cursor_execute", spy)
+
+    assert len(seen) == 1 and seen[0]["since_day"] >= date(2025, 11, 1)  # D50 (T9): bounded read
+    assert "2025-11-26" in missing["END_OF_DAY"] and "2025-10-02" not in missing["OPENING"]

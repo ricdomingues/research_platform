@@ -1,0 +1,29 @@
+{
+  "coverage": [
+    {
+      "coverage_pct": "91.03",
+      "expected_bars": 390,
+      "missing_bars": 35,
+      "orders": 1,
+      "session_date": "2025-11-26"
+    },
+    {
+      "coverage_pct": "100",
+      "expected_bars": 371,
+      "missing_bars": 0,
+      "orders": 2,
+      "session_date": "2025-11-25"
+    }
+  ],
+  "data_gaps": [
+    {
+      "event_key": "DATA_GAP:2025-11-26T15:10:00+00:00",
+      "gap_start_ts": "2025-11-26T15:10:00+00:00",
+      "minutes": 35,
+      "order_id": "00000000-0000-4000-8000-000000000004",
+      "recorded_at": "2000-01-01T00:00:00+00:00",
+      "ticker": "MSFT"
+    }
+  ],
+  "window_days": 14
+}

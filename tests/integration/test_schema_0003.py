@@ -7,8 +7,7 @@ from alembic import command
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from tests.integration.conftest import alembic_config
-from tests.integration.support import CODE_VERSION, count, submit_default
+from tests.integration.support import CODE_VERSION, alembic_config, count, submit_default
 from virtual_orders.ledger.runs import RunKind, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of
 from virtual_orders.storage import tables
