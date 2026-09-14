@@ -310,3 +310,31 @@ def test_real_portfolio_is_a_read_only_contract_without_any_adapter() -> None:
     assert {name for name in vars(PortfolioSource) if not name.startswith("_")} == {"list_positions"}
     assert not any("robinhood" in path.name.lower() for path in _platform_files())
     assert not any(_matches(name, "mcp") for path in _platform_files() for name in _imported_modules(path))
+
+
+def test_boundary_scan_covers_the_3c_modules() -> None:
+    dashboard = {_dashboard_rel(p) for p in _dashboard_files()}
+    package = "dashboard/dashboard"
+    assert {
+        f"{package}/app.py", f"{package}/client.py", f"{package}/viewmodels.py", f"{package}/charts.py",
+        f"{package}/views/common.py", f"{package}/views/overview.py", f"{package}/views/signals.py",
+        f"{package}/views/orders.py", f"{package}/views/comparison.py", f"{package}/views/health.py",
+        f"{package}/views/watchlist.py", f"{package}/views/market.py", f"{package}/views/portfolio.py",
+        "dashboard/tests/test_api_contract.py",
+    } <= dashboard
+    assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 17  # D57
+    assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/readmodels/market.py", "virtual_orders/readmodels/portfolio.py",
+        "virtual_orders/readmodels/observability.py", "virtual_orders/portfolio/sources.py",
+        "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+    } <= neutral
+    assert {"virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py"} <= set(PLATFORM_PURE_MODULES)
+    api = {_rel(p) for p in _api_files()}
+    assert {
+        "virtual_orders/api/tickers.py", "virtual_orders/api/routes/market.py",
+        "virtual_orders/api/routes/portfolio.py", "virtual_orders/api/routes/observability.py",
+    } <= api
+    assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
