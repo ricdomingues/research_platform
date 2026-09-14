@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE, actionability_outcomes
 from virtual_orders.marketdata.calendars import calendar_for_window
@@ -34,6 +35,17 @@ INCIDENT_WINDOW = timedelta(hours=24)
 STALE_CYCLE_MULTIPLIER = 3
 RECENT_LIVE_RUNS = 20
 UNKNOWN_DATA_SOURCE = "UNKNOWN_DATA_SOURCE"
+
+# D19: run details read from the database may carry free-text exception/provider messages (host names, DSNs,
+# ticker-specific errors). `facts` and cause details only ever expose the keys below, never a message value.
+_DETAIL_ALLOWED_KEYS = frozenset({
+    "orders", "market_now", "session_day",
+    "dividend_orders", "split_orders", "dividend_sources", "split_source",
+    "integrity_errors", "order_errors", "not_evaluated",
+    "dividend_integrity_errors", "dividend_order_errors", "split_integrity_errors", "split_order_errors",
+    "ingest_failures", "unavailable", "source_failures", "error",
+})
+_DETAIL_FAILURE_MAP_KEYS = frozenset({"ingest_failures", "unavailable", "source_failures"})
 
 
 class HealthState(StrEnum):
@@ -117,6 +129,44 @@ def _market_now(run: RunSummary) -> datetime:
     return datetime.fromisoformat(raw) if isinstance(raw, str) else run.started_at
 
 
+def _exception_type_from_repr(value: str) -> str:
+    """`repr(exc)` -> its exception type name only, e.g. "OperationalError('...')" -> "OperationalError".
+
+    D19: the writers (cycle.py, opening.py) store `repr(exc)`/`str(exc)` for operators reading the database
+    directly; nothing here changes what they write. This is the read-side boundary that keeps the message
+    text (hosts, DSNs, per-order detail) from ever reaching a client of /health.
+    """
+    return value.split("(", 1)[0].strip() or value
+
+
+def _sanitize_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Allow-list a run's `detail` for `facts`/causes: structured keys and counts only, never free text."""
+    sanitized: dict[str, Any] = {}
+    for key, value in detail.items():
+        if key not in _DETAIL_ALLOWED_KEYS:
+            continue
+        if key == "error":
+            sanitized[key] = _exception_type_from_repr(value) if isinstance(value, str) else value
+        elif key in _DETAIL_FAILURE_MAP_KEYS and isinstance(value, Mapping):
+            sanitized[key] = sorted(value)
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _sanitize_run(run: RunSummary) -> RunSummary:
+    return replace(run, detail=_sanitize_detail(run.detail))
+
+
+def _sanitize_snapshot(snapshot: HealthSnapshot) -> HealthSnapshot:
+    return replace(
+        snapshot,
+        live_runs=tuple(_sanitize_run(r) for r in snapshot.live_runs),
+        last_end_of_day=None if snapshot.last_end_of_day is None else _sanitize_run(snapshot.last_end_of_day),
+        last_opening=None if snapshot.last_opening is None else _sanitize_run(snapshot.last_opening),
+    )
+
+
 def _order_errors(snapshot: HealthSnapshot) -> dict[str, Mapping[str, str]]:
     errors: dict[str, Mapping[str, str]] = {}
     completed = _completed(snapshot.live_runs)
@@ -135,8 +185,11 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
     causes: list[Cause] = []
     latest_live = snapshot.live_runs[0] if snapshot.live_runs else None
     if latest_live is not None and latest_live.status == "FAILED":
-        causes.append(Cause("LAST_CYCLE_FAILED", Severity.DEGRADED,
-                            {"run_id": latest_live.run_id, "error": latest_live.detail.get("error")}))
+        raw_error = latest_live.detail.get("error")
+        causes.append(Cause("LAST_CYCLE_FAILED", Severity.DEGRADED, {
+            "run_id": latest_live.run_id,
+            "error": _exception_type_from_repr(raw_error) if isinstance(raw_error, str) else raw_error,
+        }))
     completed = _completed(snapshot.live_runs)
     if completed:
         unknown = sorted(key for key, message in completed[0].detail.get("ingest_failures", {}).items()
@@ -187,9 +240,12 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
                             {"session_day": eod.detail.get("session_day"), "reasons": dict(sorted(reasons.items()))}))
     opening = snapshot.last_opening
     if opening is not None and (opening.status == "FAILED" or opening.detail.get("source_failures")):
+        raw_error = opening.detail.get("error")
+        source_failures = opening.detail.get("source_failures", {})
         causes.append(Cause("OPENING_SOURCE_FAILURES", Severity.DEGRADED, {
             "run_id": opening.run_id, "status": opening.status,
-            "source_failures": opening.detail.get("source_failures", {}), "error": opening.detail.get("error"),
+            "source_failures": sorted(source_failures) if isinstance(source_failures, Mapping) else source_failures,
+            "error": _exception_type_from_repr(raw_error) if isinstance(raw_error, str) else raw_error,
         }))
     if snapshot.needs_review:
         causes.append(Cause("NEEDS_REVIEW_QUEUE", Severity.INFO,
@@ -201,7 +257,7 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
     causes.sort(key=lambda cause: _RANK[cause.severity])
     worst = min((_RANK[c.severity] for c in causes), default=_RANK[Severity.INFO])
     state = {0: HealthState.UNHEALTHY, 1: HealthState.DEGRADED}.get(worst, HealthState.HEALTHY)
-    return HealthReport(state, tuple(causes), snapshot)
+    return HealthReport(state, tuple(causes), _sanitize_snapshot(snapshot))
 
 
 def database_unavailable(error: Exception) -> HealthReport:
@@ -296,6 +352,6 @@ def build_health_report(engine: Engine, *, now: datetime, eval_interval_minutes:
             if revision != EXPECTED_SCHEMA_REVISION:
                 return schema_not_at_head(revision)
             snapshot = collect_health_snapshot(conn, now=now)
-    except (OperationalError, InterfaceError) as exc:
+    except (OperationalError, InterfaceError, PoolTimeoutError) as exc:
         return database_unavailable(exc)
     return evaluate_health(snapshot, eval_interval_minutes=eval_interval_minutes)

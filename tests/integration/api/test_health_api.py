@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from virtual_orders.evaluator.cycle import run_live_cycle
 from virtual_orders.ledger import errors
 from virtual_orders.ledger.errors import LedgerIntegrityError
 from virtual_orders.ledger.quarantine import record_incident
+from virtual_orders.ledger.runs import RunKind, RunStatus, finish_run, start_run
 from virtual_orders.storage import tables
 from virtual_orders.storage.database import make_engine
 
@@ -73,6 +75,20 @@ def test_order_without_projection_is_degraded_and_counted_as_frozen(api):
     causes = {c["code"]: c for c in body["causes"]}
     assert causes["PROJECTION_MISSING_ORDERS"]["detail"] == {"count": 1, "orders": [order_id]}
     assert causes["FROZEN_ORDERS"]["detail"] == {"count": 1, "frozen_projections": 0, "without_projection": 1}
+
+
+def test_failed_cycle_details_never_expose_the_exception_message_in_the_response_body(api):
+    message = 'OperationalError(\'connection to server at "db.internal" failed\')'
+    with api.services.engine.begin() as conn:
+        run = start_run(conn, RunKind.LIVE, et(DAY, "09:00"), CODE_VERSION)
+        finish_run(conn, run.run_id, RunStatus.FAILED, {"error": message})
+    status, body = health(api)
+    assert status == 200 and body["state"] == "DEGRADED"
+    cause = next(c for c in body["causes"] if c["code"] == "LAST_CYCLE_FAILED")
+    assert cause["detail"]["error"] == "OperationalError"
+    raw_body = json.dumps(body)
+    assert "db.internal" not in raw_body
+    assert "OperationalError" in raw_body
 
 
 def test_database_unavailable_is_503_without_facts(api):

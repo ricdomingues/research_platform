@@ -4,6 +4,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from virtual_orders.readmodels.health import (
     EXPECTED_SCHEMA_REVISION,
@@ -11,6 +12,7 @@ from virtual_orders.readmodels.health import (
     HealthState,
     RunSummary,
     Severity,
+    build_health_report,
     database_unavailable,
     evaluate_health,
     schema_not_at_head,
@@ -183,3 +185,61 @@ def test_review_queue_and_unverifiable_actionability_are_informational():
                              eval_interval_minutes=2)
     assert report.state is HealthState.HEALTHY
     assert codes(report) == {"NEEDS_REVIEW_QUEUE": Severity.INFO, "ACTIONABILITY_UNVERIFIABLE": Severity.INFO}
+
+
+SENSITIVE_MESSAGE = 'OperationalError(\'connection to server at "db.internal" failed\')'
+
+
+def test_last_cycle_failed_never_exposes_the_exception_message_in_causes_or_facts():
+    failing = run(status="FAILED", error=SENSITIVE_MESSAGE)
+    report = evaluate_health(snapshot(live_runs=(failing,)), eval_interval_minutes=2)
+    cause = next(c for c in report.causes if c.code == "LAST_CYCLE_FAILED")
+    assert cause.detail["error"] == "OperationalError"
+    assert report.snapshot is not None
+    assert report.snapshot.live_runs[0].detail["error"] == "OperationalError"
+    assert "db.internal" not in repr(report.causes) and "db.internal" not in repr(report.snapshot)
+
+
+def test_opening_failures_never_expose_the_exception_message_or_source_failure_details():
+    failed = run(kind="OPENING", status="FAILED", error=SENSITIVE_MESSAGE)
+    report = evaluate_health(snapshot(last_opening=failed), eval_interval_minutes=2)
+    cause = next(c for c in report.causes if c.code == "OPENING_SOURCE_FAILURES")
+    assert cause.detail["error"] == "OperationalError"
+    assert report.snapshot is not None
+    assert report.snapshot.last_opening is not None
+    assert report.snapshot.last_opening.detail["error"] == "OperationalError"
+
+    with_sources = run(kind="OPENING",
+                       source_failures={"fmp:AAPL": "down: could not reach fmp.internal for AAPL"})
+    report = evaluate_health(snapshot(last_opening=with_sources), eval_interval_minutes=2)
+    cause = next(c for c in report.causes if c.code == "OPENING_SOURCE_FAILURES")
+    assert cause.detail["source_failures"] == ["fmp:AAPL"]
+    assert report.snapshot is not None
+    assert report.snapshot.last_opening is not None
+    assert report.snapshot.last_opening.detail["source_failures"] == ["fmp:AAPL"]
+    assert "fmp.internal" not in repr(report.causes) and "fmp.internal" not in repr(report.snapshot)
+
+
+def test_facts_never_expose_ingest_or_provider_failure_messages():
+    live = run(ingest_failures={"nope:AAPL": "UNKNOWN_DATA_SOURCE: no bar source registered for 'nope'"})
+    eod = run(kind="END_OF_DAY", unavailable={"AAPL:1m": "boom: could not reach reference.internal"})
+    report = evaluate_health(snapshot(live_runs=(live,), last_end_of_day=eod), eval_interval_minutes=2)
+    assert report.snapshot is not None
+    assert report.snapshot.live_runs[0].detail["ingest_failures"] == ["nope:AAPL"]
+    assert report.snapshot.last_end_of_day is not None
+    assert report.snapshot.last_end_of_day.detail["unavailable"] == ["AAPL:1m"]
+    assert "reference.internal" not in repr(report.snapshot)
+
+
+def test_pool_exhaustion_timeout_is_unhealthy_with_only_the_exception_type_name():
+    class RaisingEngine:
+        def connect(self) -> None:
+            raise PoolTimeoutError(
+                "QueuePool limit of size 5 overflow 10 reached, connection timed out, timeout 30 at db.internal"
+            )
+
+    report = build_health_report(RaisingEngine(), now=NOW, eval_interval_minutes=2)  # type: ignore[arg-type]
+    assert report.state is HealthState.UNHEALTHY and report.snapshot is None
+    assert [c.code for c in report.causes] == ["DATABASE_UNAVAILABLE"]
+    assert report.causes[0].detail == {"error": "TimeoutError"}
+    assert "db.internal" not in repr(report.causes)
