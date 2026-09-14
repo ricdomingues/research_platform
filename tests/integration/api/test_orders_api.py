@@ -38,7 +38,8 @@ def test_list_orders_projects_state_and_filters(api):
     assert ids(origin="MANUAL_USER") == []
     replays = api.client.get("/orders", params={"replay": "true"}).json()["orders"]
     assert len(replays) == 1 and replays[0]["replay_of_order_id"] == str(closed)
-    assert api.client.get("/orders", params={"status": "NOPE"}).json()["error"]["code"] == "REQUEST_INVALID"
+    invalid_status = api.client.get("/orders", params={"status": "NOPE"})
+    assert invalid_status.status_code == 422 and invalid_status.json()["error"]["code"] == "REQUEST_INVALID"
 
 
 def test_order_detail_has_events_segments_quality_and_bars(api):

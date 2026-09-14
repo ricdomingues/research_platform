@@ -79,7 +79,8 @@ def test_manual_order_after_validity_is_422_expired(api):
 
 
 def test_manual_order_for_unknown_or_malformed_signal(api):
-    assert api.client.post(f"/signals/{uuid4()}/orders").json()["error"]["code"] == "SIGNAL_NOT_FOUND"
+    unknown = api.client.post(f"/signals/{uuid4()}/orders")
+    assert unknown.status_code == 404 and unknown.json()["error"]["code"] == "SIGNAL_NOT_FOUND"
     malformed = api.client.post("/signals/not-a-uuid/orders")
     assert malformed.status_code == 422 and malformed.json()["error"]["code"] == "REQUEST_INVALID"
 

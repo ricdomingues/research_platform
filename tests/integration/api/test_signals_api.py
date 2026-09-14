@@ -16,8 +16,11 @@ def test_every_route_rejects_a_missing_or_wrong_key(api):
     # fastapi>=0.141 wraps `include_router`ed routes in `_IncludedRouter` on `app.routes`; the public
     # `iter_route_contexts` flattens them back to the underlying `APIRoute` objects (brief predates this).
     anonymous = TestClient(api.client.app)
-    routes = [ctx.route for ctx in iter_route_contexts(api.client.app.routes) if isinstance(ctx.route, APIRoute)]
-    assert routes
+    contexts = list(iter_route_contexts(api.client.app.routes))
+    assert contexts
+    for ctx in contexts:
+        assert isinstance(ctx.route, APIRoute), ctx.route  # a future Mount/WebSocket route must not slip past this
+    routes = [ctx.route for ctx in contexts]
     for route in routes:
         path = route.path.replace("{signal_id}", str(uuid4())).replace("{order_id}", str(uuid4()))
         for method in route.methods:
