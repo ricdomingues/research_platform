@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from tests.integration.support import (
     CODE_VERSION,
     DAY,
+    PRICE_SOURCE,
     TICKER,
     FakeBarSource,
     FakeReference,
@@ -19,6 +20,7 @@ from tests.integration.support import (
 )
 from tests.support import bar, et
 from virtual_orders.evaluator import recheck as recheck_module
+from virtual_orders.evaluator.commands import flag_order_review
 from virtual_orders.evaluator.quality import run_end_of_day
 from virtual_orders.evaluator.rebuild import rebuild_projection
 from virtual_orders.evaluator.recheck import (
@@ -33,7 +35,7 @@ from virtual_orders.ledger.orders import delete_projection, load_projection, rea
 from virtual_orders.ledger.runs import RunKind, RunStatus, finish_run, latest_run_status, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of
 from virtual_orders.readmodels.orders import order_detail
-from virtual_orders.readmodels.quality import pending_quality_sessions
+from virtual_orders.readmodels.quality import PendingQuality, pending_quality_sessions
 from virtual_orders.storage import tables
 
 NEXT = "2025-11-26"
@@ -295,3 +297,43 @@ def test_naive_market_now_is_rejected(engine):
     with pytest.raises(ValueError, match="market_now must be timezone-aware"):
         run_quality_recheck(engine, gateway=feeds(FakeBarSource()), reference=FakeReference(),
                             code_version=CODE_VERSION, market_now=datetime(2025, 11, 26, 21, 0))  # noqa: DTZ001
+
+
+def test_provider_failure_after_the_lookback_gets_a_final_row_a_review_and_clears_the_pending(engine):
+    order_id, source = skipped_first_session(engine, session_bars(DAY) + session_bars(NEXT))
+    source.failing.add(TICKER)  # the feed is still down five sessions later
+    key = f"{order_id}:{DAY}"
+
+    report = recheck(engine, source, et("2025-12-03", "16:45"))  # five sessions closed after DAY
+
+    assert report.terminal == {key: "PROVIDER_FAILURE"} and set(report.rechecked) == {key}
+    assert report.not_evaluated == {}
+    (row,) = _rows(engine)
+    assert row.payload["status"] == "PROVIDER_FAILURE_FINAL" and row.payload["terminal_reason"] == "PROVIDER_FAILURE"
+    reviews = [(e.event_key, e.payload["reason"], e.payload["ref"])
+               for e in events(engine, order_id) if e.type == "NEEDS_REVIEW"]
+    assert reviews == [(f"NEEDS_REVIEW:DATA_QUALITY_UNVERIFIED:{DAY}", "DATA_QUALITY_UNVERIFIED", DAY)]  # spec 6
+    again = flag_order_review(engine, order_id, reason="DATA_QUALITY_UNVERIFIED", ref=DAY)
+    assert again.error is None and again.event_keys == ()  # idempotent by event_key
+    with engine.connect() as conn:
+        assert pending_quality_sessions(conn) == []
+        assert order_detail(conn, order_id)["order"]["needs_review"] is True  # leaves the default metrics (D34)
+
+
+def test_a_session_evaluated_by_end_of_day_after_the_pending_read_is_left_alone(engine, monkeypatch):
+    """T10: the pending list is read outside the order lock, so END_OF_DAY can write DATA_QUALITY in between."""
+    order_id = submit_default(engine).auto_order_id
+    source = FakeBarSource(session_bars(DAY) + session_bars(NEXT))
+    first = end_of_day(engine, source, SESSION, et(DAY, "16:30"))
+    end_of_day(engine, source, NEXT_SESSION, et(NEXT, "16:30"))
+    assert first.quality is not None
+    assert f"DATA_QUALITY:{DAY}" in [e.event_key for e in events(engine, order_id)]
+    stale = PendingQuality(order_id, SESSION, first.quality.run_id, "PROVIDER_FAILURE", TICKER, PRICE_SOURCE)
+    monkeypatch.setattr(recheck_module, "pending_quality_sessions", lambda conn: [stale])  # read before END_OF_DAY
+
+    report = recheck(engine, source, et(NEXT, "16:45"))
+
+    assert report.not_evaluated == {f"{order_id}:{DAY}": "ALREADY_EVALUATED"}
+    assert report.rechecked == {} and report.terminal == {}
+    assert count(engine, "data_quality_rechecks") == 0
+    assert not [e for e in events(engine, order_id) if e.type == "NEEDS_REVIEW"]

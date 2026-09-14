@@ -111,7 +111,7 @@ def test_schema_behind_the_migration_head_is_503_without_facts(api, database_url
     assert body == {
         "state": "UNHEALTHY",
         "causes": [{"code": "SCHEMA_NOT_AT_HEAD", "severity": "UNHEALTHY",
-                    "detail": {"expected": "0003", "found": "0001"}}],
+                    "detail": {"expected": "0004", "found": "0001"}}],
         "facts": None,
     }
 

@@ -32,7 +32,7 @@ from virtual_orders.readmodels.incidents import (
 from virtual_orders.readmodels.quality import pending_quality_sessions
 from virtual_orders.storage.tables import bar_batches, integrity_incidents, order_state, orders
 
-EXPECTED_SCHEMA_REVISION = "0003"  # alembic head; pinned by test_expected_schema_revision_is_the_migration_head
+EXPECTED_SCHEMA_REVISION = "0004"  # alembic head; pinned by test_expected_schema_revision_is_the_migration_head
 CONSECUTIVE_FAILURE_THRESHOLD = 3  # spec 6: three consecutive failed cycles degrade /health
 INCIDENT_WINDOW = timedelta(hours=24)
 STALE_CYCLE_MULTIPLIER = 3

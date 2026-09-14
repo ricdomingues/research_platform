@@ -45,6 +45,8 @@ from virtual_orders.storage.tables import data_quality_rechecks
 RECHECK_EVALUATED = "EVALUATED"
 RECHECK_NOT_MEASURABLE = "NOT_MEASURABLE"
 RECHECK_NO_OBSERVATIONS_FINAL = "NO_OBSERVATIONS_FINAL"
+RECHECK_PROVIDER_FAILURE_FINAL = "PROVIDER_FAILURE_FINAL"  # D52: a feed still failing after the final lookback
+RECHECK_UNVERIFIED_REVIEW = "DATA_QUALITY_UNVERIFIED"  # D52 + spec 6: unverifiable minutes -> NEEDS_REVIEW with reason
 RECHECK_FINAL_AFTER_SESSIONS = 5  # D22: a session still unobserved this many closed sessions later is final
 # Fill models whose only stop-moving event is TARGET1_HIT (payload new_stop_level + stop_active_from), so the stop
 # in force during a past session is exactly derivable from the ledger. A new model must be added consciously.
@@ -128,7 +130,7 @@ def _recheck_command(
     minute_reference: MinuteReference,
     daily_reference: DailyReference,
     feed_failed: bool,
-    final_no_observations: bool,
+    past_final_lookback: bool,
     rechecked: dict[str, str],
     not_evaluated: dict[str, str],
     terminal: dict[str, str],
@@ -170,6 +172,12 @@ def _recheck_command(
         if end <= start:
             return final(inp, RECHECK_NOT_MEASURABLE, "OUTSIDE_WINDOW")
         if feed_failed:
+            if past_final_lookback:  # D52: never let a failing feed drop out of /health without a terminal row
+                final(inp, RECHECK_PROVIDER_FAILURE_FINAL, "PROVIDER_FAILURE")
+                # Spec 6: the session's minutes can no longer be verified. Same locked path as flag_order_review
+                # (D34); idempotent by event_key NEEDS_REVIEW:DATA_QUALITY_UNVERIFIED:<session>.
+                flagged: StepResult = inp.model.flag_review(state, RECHECK_UNVERIFIED_REVIEW, day)
+                return flagged
             return skip(inp, "PROVIDER_FAILURE")  # D12: retried by a later recheck
         ticker = inp.signal.spec.ticker
         minutes = inp.ctx.calendar.expected_minutes(start, end)
@@ -177,7 +185,7 @@ def _recheck_command(
             read_bars_as_of(inp.conn, ticker, inp.order.price_source, start, end, run.data_as_of), minutes
         )
         if not bars:
-            if final_no_observations:
+            if past_final_lookback:
                 return final(inp, RECHECK_NO_OBSERVATIONS_FINAL, "NO_OBSERVATIONS")
             return skip(inp, "NO_OBSERVATIONS")  # D12
         quality = next((q for q in session_quality(inp.ctx.calendar, start, end, [b.ts for b in bars])
