@@ -53,7 +53,7 @@ def test_order_detail_has_events_segments_quality_and_bars(api):
     assert keys[0] == "ORDER_CREATED" and "FILLED" in keys and "TARGET2_HIT" in keys
     assert [e["seq"] for e in detail["events"]] == list(range(1, len(detail["events"]) + 1))
     assert len(detail["segments"]) == 3 and all(s["selected_data_hash"] for s in detail["segments"])
-    assert detail["data_quality"] == {"expected_bars": 0, "missing_bars": 0, "events": []}
+    assert detail["data_quality"] == {"expected_bars": 0, "missing_bars": 0, "events": [], "rechecks": []}
     assert detail["bars"][0]["ts"] == et(DAY, "09:30").isoformat()
     assert detail["bars"][-1]["ts"] == et(DAY, "12:50").isoformat()
     assert detail["bars"][0]["open"] == "105"

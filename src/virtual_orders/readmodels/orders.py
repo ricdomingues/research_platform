@@ -13,7 +13,7 @@ from virtual_orders.ledger.errors import OrderNotFound
 from virtual_orders.ledger.events import stored_events
 from virtual_orders.ledger.runs import get_run, list_segments
 from virtual_orders.marketdata.asof import read_bars_as_of
-from virtual_orders.storage.tables import order_state, orders, signals
+from virtual_orders.storage.tables import data_quality_rechecks, order_state, orders, signals
 
 QUALITY_EVENT_TYPES = frozenset({"DATA_QUALITY", "DATA_GAP"})
 ORDER_COLUMNS = (
@@ -82,6 +82,15 @@ def order_detail(conn: Connection, order_id: UUID) -> dict[str, Any]:
              "volume": bar.volume, "batch_id": bar.batch_id}
             for bar in read_bars_as_of(conn, row["ticker"], row["price_source"], row["evaluation_start_ts"], end, as_of)
         ]
+    rechecks = [
+        {"session_date": item.session_date, "recheck_key": item.recheck_key, "run_id": item.run_id,
+         "source_run_id": item.source_run_id, "data_as_of": item.data_as_of, "payload": item.payload}
+        for item in conn.execute(
+            select(data_quality_rechecks)
+            .where(data_quality_rechecks.c.order_id == order_id)
+            .order_by(data_quality_rechecks.c.session_date, data_quality_rechecks.c.id)
+        )
+    ]
     return {
         "order": dict(row),
         "state": state,
@@ -91,6 +100,7 @@ def order_detail(conn: Connection, order_id: UUID) -> dict[str, Any]:
             "expected_bars": row["expected_bars"] or 0,
             "missing_bars": row["missing_bars"] or 0,
             "events": [event for event in events if event["type"] in QUALITY_EVENT_TYPES],
+            "rechecks": rechecks,
         },
         "bars": bars,
     }
