@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.12.3"
+  TEST_DATABASE_ADMIN_URL: postgresql+psycopg://vo:vo@127.0.0.1:55432/postgres
+
+jobs:
+  engine:
+    name: engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vo
+          POSTGRES_PASSWORD: vo
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U vo"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Ruff
+        run: |
+          paths=""
+          for p in src tests migrations; do
+            if [ -e "$p" ]; then paths="$paths $p"; fi
+          done
+          uv run ruff check $paths
+
+      - name: Mypy (strict)
+        run: uv run mypy
+
+      - name: Frozen core
+        run: |
+          if git rev-parse -q --verify refs/tags/plan/virtual-order-engine-core-complete >/dev/null; then
+            git diff --exit-code --stat plan/virtual-order-engine-core-complete -- src/core
+          else
+            echo "core-complete tag not present; nothing to compare"
+          fi
+
+      - name: Migrations from an empty database
+        run: |
+          if [ ! -d migrations ]; then
+            echo "no migrations on this revision"
+            exit 0
+          fi
+          uv run python - <<'PY'
+          import sqlalchemy as sa
+
+          engine = sa.create_engine(
+              "postgresql+psycopg://vo:vo@127.0.0.1:55432/postgres", isolation_level="AUTOCOMMIT"
+          )
+          with engine.connect() as conn:
+              conn.execute(sa.text("DROP DATABASE IF EXISTS ci_migrations"))
+              conn.execute(sa.text("CREATE DATABASE ci_migrations"))
+          PY
+          export DATABASE_URL=postgresql+psycopg://vo:vo@127.0.0.1:55432/ci_migrations
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Pytest (unit, property, import boundaries, Postgres integration, deploy)
+        run: uv run pytest -p no:cacheprovider -o addopts="" -q
+
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Detect dashboard project
+        id: detect
+        run: |
+          if [ -f dashboard/pyproject.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "no dashboard project on this revision"
+          fi
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        if: steps.detect.outputs.present == 'true'
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install locked dependencies
+        if: steps.detect.outputs.present == 'true'
+        run: uv sync --directory dashboard --locked
+
+      - name: Ruff
+        if: steps.detect.outputs.present == 'true'
+        run: uv run --directory dashboard ruff check .
+
+      - name: Mypy (strict)
+        if: steps.detect.outputs.present == 'true'
+        run: uv run --directory dashboard mypy
+
+      - name: Pytest
+        if: steps.detect.outputs.present == 'true'
+        run: uv run --directory dashboard pytest -p no:cacheprovider -o addopts="" -q
