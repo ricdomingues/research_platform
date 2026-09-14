@@ -12,6 +12,8 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from virtual_orders.alerts.outbox import alert_envelope
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.services import Services
 from virtual_orders.storage.database import WORKER_LOCK_KEY
 from virtual_orders.worker.jobs import JobResult, WorkerJobs
@@ -92,11 +94,12 @@ def _alert_lock_lost(services: Services) -> None:
     sink = services.alert_sink
     if sink is None:
         return
-    observed = services.clock()
+    observed = require_aware(services.clock(), "clock")
     alert_key = f"WORKER_LOCK_LOST:{observed.isoformat()}"
     try:
-        sink.deliver(alert_key, {"schema_version": 1, "alert_key": alert_key, "kind": "WORKER_LOCK_LOST",
-                                 "observed_at": observed.isoformat()})
+        sink.deliver(alert_key, alert_envelope(
+            alert_key=alert_key, kind="WORKER_LOCK_LOST", document={"observed_at": observed.isoformat()}
+        ))
     except Exception as exc:  # noqa: BLE001 - n8n is never in the critical path
         logger.warning("worker lock alert failed via %s: %s", sink.name, type(exc).__name__)
 
@@ -109,6 +112,7 @@ def run_worker(
 ) -> int:
     lock: Connection | None = None
     lost = False
+    stopping = False  # T16: a second SIGTERM/SIGINT, or a signal after lock loss, must never shut down twice
     try:
         lock = acquire_worker_lock(services.engine)
         if lock is None:
@@ -120,13 +124,15 @@ def run_worker(
         scheduler = scheduler_factory()
 
         def watch_lock() -> JobResult:
-            nonlocal lost
+            nonlocal lost, stopping
             if worker_lock_held(held):
                 return JobResult(WORKER_LOCK, True, "HELD")
             lost = True
             logger.error("worker lock lost; stopping so a second worker can never run alongside this one")
             _alert_lock_lost(services)
-            scheduler.shutdown(wait=False)  # called from a job thread: never wait for itself
+            if not stopping:
+                stopping = True
+                scheduler.shutdown(wait=False)  # called from a job thread: never wait for itself
             return JobResult(WORKER_LOCK, False, "LOCK_LOST")
 
         for spec in (*schedule, worker_lock_schedule()):
@@ -135,6 +141,11 @@ def run_worker(
                               max_instances=1, coalesce=True, misfire_grace_time=MISFIRE_GRACE_SECONDS)
         if install_signal_handlers:
             def stop(signum: int, frame: FrameType | None) -> None:
+                nonlocal stopping
+                if stopping:
+                    logger.info("signal %s received again; already shutting down", signum)
+                    return  # a second signal, or one racing the lock-loss shutdown: never shut down twice
+                stopping = True
                 logger.info("signal %s received; waiting for running jobs and shutting down", signum)
                 scheduler.shutdown(wait=True)
 

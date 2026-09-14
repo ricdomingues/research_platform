@@ -16,6 +16,7 @@ class FakeScheduler:
         self.jobs: list[tuple] = []
         self.started = False
         self.stopped = False
+        self.shutdown_calls: list[bool] = []  # each entry is the `wait` argument, in call order
 
     def add_job(self, func, trigger, *, id, name, max_instances, coalesce, misfire_grace_time):  # noqa: A002
         self.jobs.append((id, func, trigger, name, max_instances, coalesce, misfire_grace_time))
@@ -25,6 +26,7 @@ class FakeScheduler:
 
     def shutdown(self, wait: bool = True) -> None:
         self.stopped = True
+        self.shutdown_calls.append(wait)
 
 
 def assert_lock_is_free(engine):
@@ -81,7 +83,49 @@ def test_termination_signals_shut_the_scheduler_down_gracefully(worker, monkeypa
     scheduler = SignalledWhileRunning()
     assert run_worker(worker.services, scheduler_factory=lambda: scheduler) == 0
     assert scheduler.stopped and set(installed) == {signal.SIGTERM, signal.SIGINT}
+    assert scheduler.shutdown_calls == [True]  # the signal path always waits for running jobs
     assert worker.closed == [1]
+
+
+def test_a_second_signal_does_not_shut_the_scheduler_down_twice(worker, monkeypatch):
+    """T16: a real APScheduler raises SchedulerNotRunningError on a second shutdown; the stop handler must
+    be idempotent so a double Ctrl+C (or a signal racing the lock-loss shutdown) never unwinds start()."""
+    installed: dict = {}
+    monkeypatch.setattr(runner_module.signal, "signal", lambda signum, handler: installed.__setitem__(signum, handler))
+
+    class SignalledTwice(FakeScheduler):
+        def start(self) -> None:
+            installed[signal.SIGTERM](signal.SIGTERM, None)
+            installed[signal.SIGINT](signal.SIGINT, None)  # e.g. a second Ctrl+C
+
+    scheduler = SignalledTwice()
+    assert run_worker(worker.services, scheduler_factory=lambda: scheduler) == 0
+    assert scheduler.shutdown_calls == [True]
+    assert worker.closed == [1]
+
+
+def test_a_signal_after_the_lock_is_lost_does_not_shut_down_twice(worker, monkeypatch):
+    installed: dict = {}
+    monkeypatch.setattr(runner_module.signal, "signal", lambda signum, handler: installed.__setitem__(signum, handler))
+    engine = worker.services.engine
+
+    class LosesTheLockThenSignalled(FakeScheduler):
+        def start(self) -> None:
+            watch = {job[0]: job[1] for job in self.jobs}["worker_lock"]
+            assert watch() == JobResult("worker_lock", True, "HELD")
+            with engine.begin() as conn:  # e.g. a database restart ended the session holding the lock
+                conn.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_locks "
+                    "WHERE locktype = 'advisory' AND objid = CAST(:key AS oid) AND pid <> pg_backend_pid()"
+                ), {"key": WORKER_LOCK_KEY})
+            assert watch() == JobResult("worker_lock", False, "LOCK_LOST")
+            installed[signal.SIGTERM](signal.SIGTERM, None)  # a signal arriving after the lock is already gone
+
+    scheduler = LosesTheLockThenSignalled()
+    assert run_worker(worker.services, scheduler_factory=lambda: scheduler, install_signal_handlers=True) == 3
+    assert scheduler.shutdown_calls == [False]  # only the lock-loss shutdown ran; the signal was a no-op
+    assert worker.closed == [1]
+    assert_lock_is_free(engine)
 
 
 def test_a_lost_worker_lock_alerts_and_stops_the_scheduler(worker):

@@ -87,6 +87,28 @@ def test_live_session_window_follows_the_nyse_calendar():
     assert live_session(at("2025-11-27", "11:00")) is None  # Thanksgiving
 
 
+def test_dst_spring_forward_transition_next_fire_and_live_session():
+    """2026-03-08 (Sun) is the US spring-forward day; 2026-03-09 (Mon) is the first EDT session."""
+    assert next_fire("live_cycle", at("2026-03-06", "16:59")) == at("2026-03-09", "09:00")
+    assert next_fire("opening", at("2026-03-06", "09:26")) == at("2026-03-09", "09:25")
+    assert next_fire("end_of_day", at("2026-03-06", "18:31")) == at("2026-03-09", "16:30")
+    assert live_session(at("2026-03-09", "09:29")) is None
+    assert live_session(at("2026-03-09", "09:30")).day == date(2026, 3, 9)
+    assert live_session(at("2026-03-09", "16:05")) is not None
+    assert live_session(at("2026-03-09", "16:06")) is None
+
+
+def test_dst_fall_back_transition_next_fire_and_live_session():
+    """2025-11-02 (Sun) is the US fall-back day; 2025-11-03 (Mon) is the first EST session."""
+    assert next_fire("live_cycle", at("2025-10-31", "16:59")) == at("2025-11-03", "09:00")
+    assert next_fire("opening", at("2025-10-31", "09:26")) == at("2025-11-03", "09:25")
+    assert next_fire("end_of_day", at("2025-10-31", "18:31")) == at("2025-11-03", "16:30")
+    assert live_session(at("2025-11-03", "09:29")) is None
+    assert live_session(at("2025-11-03", "09:30")).day == date(2025, 11, 3)
+    assert live_session(at("2025-11-03", "16:05")) is not None
+    assert live_session(at("2025-11-03", "16:06")) is None
+
+
 def test_opening_and_close_detection():
     assert session_opening_today(at("2025-11-26", "09:25")).day == date(2025, 11, 26)
     assert session_opening_today(at("2025-11-26", "09:30")) is None
