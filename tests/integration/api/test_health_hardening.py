@@ -132,6 +132,24 @@ def test_missing_opening_and_end_of_day_runs_are_visible_after_their_grace(api):
     assert payload["facts"]["missing_runs"] == {}
 
 
+def test_half_day_end_of_day_deadline_follows_the_1830_retry_not_the_close(api):
+    """D38 fix: close + 3h on a 13:00 half day is 16:00 ET, before the 18:30 retry even runs; the real
+    deadline is the later of close + 3h and 19:00 ET (18:30 retry + 30 min)."""
+    engine = api.services.engine
+    for day in (SESSION, date(2025, 11, 26)):  # keep the surrounding sessions clean of their own MISSING causes
+        job_run(engine, RunKind.OPENING, day)
+        job_run(engine, RunKind.END_OF_DAY, day)
+
+    api.clock.set(et("2025-11-28", "16:25"))
+    assert "END_OF_DAY_MISSING" not in cause_map(body(api))
+
+    api.clock.set(et("2025-11-28", "18:59"))
+    assert "END_OF_DAY_MISSING" not in cause_map(body(api))
+
+    api.clock.set(et("2025-11-28", "19:00"))
+    assert cause_map(body(api))["END_OF_DAY_MISSING"]["detail"] == {"session_days": ["2025-11-28"]}
+
+
 def test_without_any_opening_or_end_of_day_run_nothing_is_missing(api):
     api.clock.set(et("2025-12-03", "20:00"))
     payload = body(api)

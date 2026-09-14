@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.exc import InterfaceError, OperationalError
@@ -42,6 +43,10 @@ QUERY_CANCELED_SQLSTATE = "57014"
 UNSPECIFIED_REVIEW_REASON = "UNSPECIFIED"  # also written as a literal in _REVIEW_REASONS (pinned by a test)
 OPENING_GRACE = timedelta(minutes=30)  # D38: the 09:25 opening job had its chance by open + 30 min
 END_OF_DAY_GRACE = timedelta(hours=3)  # D38: 16:30 job + 18:30 retry, then close + 3 h
+# D38 fix: the job runs on a wall-clock cron (16:30/18:30 ET), not on the close, so a half day (13:00 close)
+# must not be flagged before the 18:30 retry had its chance. The deadline is whichever is later.
+_MARKET_TZ = ZoneInfo("America/New_York")
+END_OF_DAY_FLOOR = time(19, 0)  # 18:30 retry + 30 min, in ET
 MISSING_RUN_LOOKBACK = timedelta(days=14)
 
 # D19: run details read from the database may carry free-text exception/provider messages (host names, DSNs,
@@ -391,7 +396,10 @@ def missing_job_runs(conn: Connection, *, now: datetime) -> dict[str, list[str]]
             continue
         if session.open_utc + OPENING_GRACE <= now and ("OPENING", session.day) not in completed:
             missing.setdefault("OPENING", []).append(session.day.isoformat())
-        if session.close_utc + END_OF_DAY_GRACE <= now and ("END_OF_DAY", session.day) not in completed:
+        eod_deadline = max(
+            session.close_utc + END_OF_DAY_GRACE, datetime.combine(session.day, END_OF_DAY_FLOOR, tzinfo=_MARKET_TZ)
+        )
+        if eod_deadline <= now and ("END_OF_DAY", session.day) not in completed:
             missing.setdefault("END_OF_DAY", []).append(session.day.isoformat())
     return missing
 
