@@ -91,6 +91,26 @@ def test_transport_failures_keep_only_the_exception_type():
     assert (caught.value.error_type, str(caught.value)) == ("ConnectError", "ConnectError")
 
 
+def test_non_finite_numbers_in_responses_are_rejected_with_the_fixed_code():
+    with pytest.raises(ApiRequestFailed) as caught:
+        client_for(lambda request: httpx.Response(200, text='{"value": NaN}')).watchlist()
+    assert caught.value.code == "INVALID_RESPONSE"
+
+
+def test_non_finite_numbers_in_request_bodies_are_rejected_before_sending():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(201, json={"rule": {"id": "r-1"}})
+
+    api = client_for(handler)
+    with pytest.raises(ApiRequestFailed) as caught:
+        api.create_rule("MSFT", {"kind": "PRICE_CROSS", "level": float("nan"), "direction": "ABOVE"})
+    assert caught.value.code == "INVALID_REQUEST"
+    assert seen == []
+
+
 def test_health_returns_the_unhealthy_body_instead_of_raising():
     body = {"state": "UNHEALTHY", "causes": [{"code": "DATABASE_UNAVAILABLE"}], "facts": None}
     assert client_for(lambda request: httpx.Response(503, json=body)).health() == body

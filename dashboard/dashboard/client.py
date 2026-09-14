@@ -48,6 +48,10 @@ class ApiUnreachable(Exception):
         self.error_type = error_type
 
 
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"non-finite number {name} is not allowed")
+
+
 def json_text(body: Any) -> str:
     """JSON with Decimal written as exact number tokens (the API reads numbers as Decimal, never float)."""
     numbers: dict[str, str] = {}
@@ -59,7 +63,11 @@ def json_text(body: Any) -> str:
             return marker
         raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
-    text = json.dumps(body, default=default)
+    try:
+        text = json.dumps(body, default=default, allow_nan=False)
+    except ValueError:
+        # No exception text: it can echo the offending nan/inf value back.
+        raise ApiRequestFailed(0, "INVALID_REQUEST") from None
     for marker, number in numbers.items():
         text = text.replace(f'"{marker}"', number)
     return text
@@ -122,7 +130,10 @@ class ApiClient:
         except httpx.HTTPError as exc:
             raise ApiUnreachable(type(exc).__name__) from None
         try:
-            payload: Any = json.loads(response.text, parse_float=Decimal) if response.content else {}
+            payload: Any = (
+                json.loads(response.text, parse_float=Decimal, parse_constant=_reject_constant)
+                if response.content else {}
+            )
         except ValueError:
             payload = None
         status = response.status_code
