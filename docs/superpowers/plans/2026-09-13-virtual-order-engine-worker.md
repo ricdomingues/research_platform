@@ -6865,4 +6865,19 @@ git tag -a plan/virtual-order-engine-worker-complete -m "Plan 3B — worker, n8n
 
 ## Encerramento do controlador
 
-Escrita pelo controlador no Step 5 da Task 17, no formato do 3A: modelo de execução por task, rodadas de correção, verificação final do zero (contagens, ruff, mypy, `src/core`, `BASE`, trailers, autor, smoke), estado da tag e ponteiro para a nota de encerramento.
+**Modelo de execução.** Todas as tasks foram despachadas por subagentes (`subagent-driven-development`), com controlador sonnet. Implementadores em haiku para as Tasks 5, 6, 11 e para o Step 1 da Task 17 (diffs pequenos e completos no brief); sonnet para as demais tasks de implementação (1–4, 7–10, 12–16). Revisores em sonnet por padrão; opus nas revisões das Tasks 10 (recheck vs. D4/D12), 12 (idempotência/concorrência do outbox), 13 (ingestão vs. avaliação da watchlist) e 16 (worker/scheduler/lock), além da revisão final de branch inteiro (Task 17, Step 4).
+
+**Rodadas de correção.** Sem rodada de correção por task: cada task levou no máximo uma correção local seguida de re-revisão dentro do próprio ciclo da task (todas fecharam "review clean"). A única rodada de correção de branch inteiro veio depois da revisão final (Step 4), cobrindo I1, I2, I3 e os seis achados menores já marcados "fix-before-merge" pelas revisões de task (Task 12 ×2, Task 16 ×4) — ver a nota de encerramento para o detalhe. Essa rodada foi seguida de uma única re-revisão de escopo restrito (sonnet), que marcou os 7 achados como ADDRESSED sem quebra nova.
+
+**Verificação final do zero** (Step 2, no commit `8da0f24`, depois da rodada de correção):
+- 908 testes passando, 0 skips, 0 warnings (899 + 9 novos da rodada de correção), incluindo os 671 herdados (`N_BASE`, Plano 3A).
+- `uv run ruff check src tests migrations`: limpo.
+- `uv run mypy`: limpo, 99 arquivos.
+- `git diff plan/virtual-order-engine-core-complete -- src/core` e `git status --porcelain -- src/core`: ambos vazios.
+- `BASE=plan-3a-api` (`8cfb743`) — o branch continua empilhado sobre o 3A, ainda sem `main` contendo os Planos 2/3A (mesma regra do 3A).
+- 23 commits no intervalo (22 de implementação/correções/testes + este encerramento); nenhum trailer `Co-Authored-By`/`Claude-Session`; um único autor, `Ricardo Carneiro <132141856+ricdomingues@users.noreply.github.com>`.
+- Smoke (Step 3, sem rede): 14 rotas conforme o esperado; `N8nWebhook(url=<hidden>)` (sem `token`); 6 job ids (`live_cycle`, `watchlist`, `opening`, `end_of_day`, `health_watch`, `deliver_alerts`; `worker_lock` é registrado pelo runner); ajuda do CLI com `run`/`rebuild-projections`; `run` sem configuração imprime só códigos `CONFIG_INVALID` e sai com código 2.
+
+**Estado da tag:** `plan/virtual-order-engine-worker-complete` criada localmente após a verificação, sem push. Nenhuma revisão está aberta no ledger (a re-revisão de escopo restrito da rodada final marcou os 7 achados ADDRESSED).
+
+**Nota de encerramento:** `docs/superpowers/notes/2026-09-13-plan3b-closeout.md`.
