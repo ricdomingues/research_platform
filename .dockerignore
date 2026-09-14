@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.hypothesis
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.superpowers
+**/__pycache__
+dashboard
+docs
+tests
+scratchpad
