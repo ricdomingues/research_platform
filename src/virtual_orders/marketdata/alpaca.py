@@ -11,7 +11,14 @@ from typing import Any
 import httpx
 
 from virtual_orders.marketdata.http import ResourceNotFound, get_json, vendor_decimal
-from virtual_orders.marketdata.sources import DataTier, RawBar, SourceDataError, SplitRecord, TickerStatus
+from virtual_orders.marketdata.sources import (
+    DataTier,
+    RawBar,
+    SourceDataError,
+    SourceUnavailable,
+    SplitRecord,
+    TickerStatus,
+)
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_IEX_SOURCE = "alpaca_iex"
@@ -158,8 +165,12 @@ class AlpacaAssets(_AlpacaClient):
                 self._client, f"{self._base_url}/v2/assets/{ticker}", params={}, headers=self._headers,
                 attempts=self._attempts, backoff_seconds=self._backoff, sleep=self._sleep,
             )
-        except ResourceNotFound:
-            return TickerStatus(ticker, False, "UNKNOWN_ASSET")
+        except ResourceNotFound as missing:
+            if isinstance(missing.body, dict) and isinstance(missing.body.get("message"), str):
+                return TickerStatus(ticker, False, "UNKNOWN_ASSET")
+            raise SourceUnavailable(
+                f"Alpaca asset endpoint answered 404 without an Alpaca error body for {ticker}"
+            ) from None
         if not isinstance(body, dict):
             raise SourceDataError(f"malformed Alpaca asset for {ticker}")
         symbol, status = body.get("symbol"), body.get("status")

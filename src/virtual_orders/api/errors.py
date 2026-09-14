@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from virtual_orders.alerts.watchlist import AlertRuleInvalid, AlertRuleNotFound, WatchlistTickerNotFound
 from virtual_orders.evaluator.commands import OrderAlreadyFinal, ReplayOrderReadOnly
 from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE, ManualOrderError
 from virtual_orders.evaluator.replay import ReplaySelectionError
@@ -58,7 +59,15 @@ def to_api_error(exc: Exception, method: str) -> ApiError:
     if isinstance(exc, ReplayOrderReadOnly):
         return ApiError(409, "REPLAY_ORDER_READ_ONLY", detail={"order_id": exc.order_id})
     if isinstance(exc, ReplaySelectionError):
-        return ApiError(422, "REPLAY_REQUEST_INVALID", detail={"errors": [str(exc)]})
+        # I3: fixed codes only, never str(exc) (which may quote a caller-supplied override value); the full
+        # text is logged by the caller when it re-raises, never sent in the response body.
+        return ApiError(422, "REPLAY_REQUEST_INVALID", detail={"errors": exc.codes})
+    if isinstance(exc, AlertRuleInvalid):
+        return ApiError(422, "ALERT_RULE_INVALID", detail={"errors": exc.errors})
+    if isinstance(exc, WatchlistTickerNotFound):
+        return ApiError(404, "WATCHLIST_TICKER_NOT_FOUND")
+    if isinstance(exc, AlertRuleNotFound):
+        return ApiError(404, "ALERT_RULE_NOT_FOUND")
     if isinstance(exc, LedgerIntegrityError):
         # A command meets ledger state that forbids the write (409); a read meets corrupted stored data (500).
         status = 500 if method == "GET" else 409
@@ -75,8 +84,8 @@ def to_api_error(exc: Exception, method: str) -> ApiError:
 
 HANDLED = (
     ApiError, SignalValidationError, IdempotencyConflict, ManualOrderError, SignalNotFound, OrderNotFound,
-    OrderAlreadyFinal, ReplayOrderReadOnly, ReplaySelectionError, LedgerIntegrityError, RequestValidationError,
-    StarletteHTTPException, Exception,
+    OrderAlreadyFinal, ReplayOrderReadOnly, ReplaySelectionError, AlertRuleInvalid, WatchlistTickerNotFound,
+    AlertRuleNotFound, LedgerIntegrityError, RequestValidationError, StarletteHTTPException, Exception,
 )
 
 

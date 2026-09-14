@@ -22,7 +22,8 @@ def test_every_route_rejects_a_missing_or_wrong_key(api):
         assert isinstance(ctx.route, APIRoute), ctx.route  # a future Mount/WebSocket route must not slip past this
     routes = [ctx.route for ctx in contexts]
     for route in routes:
-        path = route.path.replace("{signal_id}", str(uuid4())).replace("{order_id}", str(uuid4()))
+        path = (route.path.replace("{signal_id}", str(uuid4())).replace("{order_id}", str(uuid4()))
+                .replace("{rule_id}", str(uuid4())).replace("{ticker}", "AAPL"))
         for method in route.methods:
             for headers in ({}, {"X-API-Key": "wrong"}):
                 response = anonymous.request(method, path, headers=headers)
@@ -127,7 +128,11 @@ def test_malformed_json_is_422(api):
     for raw in ("not json", "[1, 2]", '{"stop": NaN}'):
         response = api.client.post("/signals", content=raw, headers={"Content-Type": "application/json"})
         assert response.status_code == 422, raw
-        assert response.json()["error"]["code"] == "INVALID_JSON"
+        error = response.json()["error"]
+        assert error["code"] == "INVALID_JSON"
+        # I3: never the decoder's own message (it can quote the raw request bytes).
+        assert "message" not in error["detail"]
+        assert set(error["detail"]) <= {"line", "column", "code"}
 
 
 def test_list_signals_filters_by_market_date_and_strategy(api):

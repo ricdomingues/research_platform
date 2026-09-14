@@ -1,4 +1,4 @@
-"""SQLAlchemy Core mirror of migrations/versions/0001_initial_schema.py (checked by test_schema)."""
+"""SQLAlchemy Core mirror of migrations/versions/*.py (checked by test_schema)."""
 
 from __future__ import annotations
 
@@ -186,7 +186,76 @@ integrity_incidents = Table(
     _ts("recorded_at"),
 )
 
+data_quality_rechecks = Table(
+    "data_quality_rechecks", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("order_id", UUID(as_uuid=True), nullable=False),
+    Column("session_date", Date, nullable=False),
+    Column("recheck_key", Text, nullable=False),
+    Column("run_id", UUID(as_uuid=True), nullable=False),
+    Column("source_run_id", UUID(as_uuid=True), nullable=False),
+    _ts("data_as_of"),
+    Column("payload", JSONB, nullable=False),
+    _ts("recorded_at"),
+)
+
+watchlist = Table(
+    "watchlist", metadata,
+    Column("ticker", Text, primary_key=True),
+    _ts("added_at"),
+)
+
+alert_rules = Table(
+    "alert_rules", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("ticker", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    _num("level", True),
+    Column("direction", Text),
+    _num("cmf_threshold", True),
+    Column("window_bars", Integer),
+    Column("cooldown_minutes", Integer, nullable=False),
+    _ts("created_at"),
+)
+
+alert_outbox = Table(
+    "alert_outbox", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("alert_key", Text, nullable=False, unique=True),
+    Column("kind", Text, nullable=False),
+    Column("subject", Text),
+    _ts("subject_ts", True),
+    Column("document", JSONB, nullable=False),
+    _ts("created_at"),
+)
+
+alert_delivery_attempts = Table(
+    "alert_delivery_attempts", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("alert_id", BigInteger, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("status_code", Integer),
+    Column("error_type", Text),
+    _ts("attempted_at"),
+)
+
+health_state_log = Table(
+    "health_state_log", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("state", Text, nullable=False),
+    Column("cause_codes", ARRAY(Text), nullable=False),
+    _ts("observed_at"),
+)
+
+alert_event_marks = Table(
+    "alert_event_marks", metadata,
+    Column("order_event_id", BigInteger, primary_key=True),
+    Column("alert_key", Text, nullable=False),
+    _ts("recorded_at"),
+)
+
 APPEND_ONLY_TABLES = (
     "signals", "orders", "order_events", "evaluation_runs", "evaluation_run_status",
     "order_eval_segments", "bar_batches", "bars_1m", "market_data_snapshots", "integrity_incidents",
+    "data_quality_rechecks", "alert_outbox", "alert_delivery_attempts", "alert_event_marks", "health_state_log",
 )

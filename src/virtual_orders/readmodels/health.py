@@ -10,14 +10,16 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from virtual_orders.alerts.outbox import order_event_alerts_behind, undeliverable_alerts
 from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE, actionability_outcomes
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.readmodels.incidents import (
@@ -27,14 +29,25 @@ from virtual_orders.readmodels.incidents import (
     classify_order_errors,
     incident_groups,
 )
+from virtual_orders.readmodels.quality import pending_quality_sessions
 from virtual_orders.storage.tables import bar_batches, integrity_incidents, order_state, orders
 
-EXPECTED_SCHEMA_REVISION = "0002"  # alembic head; pinned by test_expected_schema_revision_is_the_migration_head
+EXPECTED_SCHEMA_REVISION = "0003"  # alembic head; pinned by test_expected_schema_revision_is_the_migration_head
 CONSECUTIVE_FAILURE_THRESHOLD = 3  # spec 6: three consecutive failed cycles degrade /health
 INCIDENT_WINDOW = timedelta(hours=24)
 STALE_CYCLE_MULTIPLIER = 3
 RECENT_LIVE_RUNS = 20
 UNKNOWN_DATA_SOURCE = "UNKNOWN_DATA_SOURCE"
+HEALTH_STATEMENT_TIMEOUT_MS = 5000  # D28: a slow query answers DEGRADED quickly instead of hanging /health
+QUERY_CANCELED_SQLSTATE = "57014"
+UNSPECIFIED_REVIEW_REASON = "UNSPECIFIED"  # also written as a literal in _REVIEW_REASONS (pinned by a test)
+OPENING_GRACE = timedelta(minutes=30)  # D38: the 09:25 opening job had its chance by open + 30 min
+END_OF_DAY_GRACE = timedelta(hours=3)  # D38: 16:30 job + 18:30 retry, then close + 3 h
+# D38 fix: the job runs on a wall-clock cron (16:30/18:30 ET), not on the close, so a half day (13:00 close)
+# must not be flagged before the 18:30 retry had its chance. The deadline is whichever is later.
+_MARKET_TZ = ZoneInfo("America/New_York")
+END_OF_DAY_FLOOR = time(19, 0)  # 18:30 retry + 30 min, in ET
+MISSING_RUN_LOOKBACK = timedelta(days=14)
 
 # D19: run details read from the database may carry free-text exception/provider messages (host names, DSNs,
 # ticker-specific errors). `facts` and cause details only ever expose the keys below, never a message value.
@@ -46,6 +59,10 @@ _DETAIL_ALLOWED_KEYS = frozenset({
     "ingest_failures", "unavailable", "source_failures", "error",
 })
 _DETAIL_FAILURE_MAP_KEYS = frozenset({"ingest_failures", "unavailable", "source_failures"})
+_DETAIL_ORDER_MAP_KEYS = frozenset({
+    "integrity_errors", "order_errors", "not_evaluated", "dividend_integrity_errors", "dividend_order_errors",
+    "split_integrity_errors", "split_order_errors",
+})
 
 
 class HealthState(StrEnum):
@@ -95,6 +112,10 @@ class HealthSnapshot:
     orders_without_projection_ids: tuple[str, ...]  # the first MAX_LISTED_ORDERS of them
     needs_review: dict[str, int]  # reason -> non-replay orders flagged with it
     actionability: dict[str, int]  # result -> ACTIONABILITY runs within INCIDENT_WINDOW
+    quality_pending: dict[str, str] | None = None  # "<order_id>:<session_day>" -> D12 reason (D22); None = not collected
+    missing_runs: dict[str, list[str]] | None = None  # "OPENING"/"END_OF_DAY" -> session days without a run (D38)
+    undeliverable_alerts: int | None = None  # alerts expired within 7 days (D24); INFO only
+    order_event_alerts_behind: int | None = None  # unmarked events past the enqueue lookback (D35); INFO only
 
 
 @dataclass(frozen=True)
@@ -139,8 +160,17 @@ def _exception_type_from_repr(value: str) -> str:
     return value.split("(", 1)[0].strip() or value
 
 
+def _capped(detail: dict[str, Any], key: str, value: Mapping[str, Any], *, keys_only: bool) -> None:
+    ordered = sorted(value)[:MAX_LISTED_ORDERS]
+    detail[key] = ordered if keys_only else {name: value[name] for name in ordered}
+    if len(value) > MAX_LISTED_ORDERS:
+        detail[f"{key}_total"] = len(value)
+
+
 def _sanitize_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
-    """Allow-list a run's `detail` for `facts`/causes: structured keys and counts only, never free text."""
+    """Allow-list a run's `detail` for `facts`/causes: structured keys and counts only, never free text (D19).
+
+    Per-order maps and feed lists are capped at MAX_LISTED_ORDERS with a `<key>_total` count (D31)."""
     sanitized: dict[str, Any] = {}
     for key, value in detail.items():
         if key not in _DETAIL_ALLOWED_KEYS:
@@ -148,7 +178,9 @@ def _sanitize_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
         if key == "error":
             sanitized[key] = _exception_type_from_repr(value) if isinstance(value, str) else value
         elif key in _DETAIL_FAILURE_MAP_KEYS and isinstance(value, Mapping):
-            sanitized[key] = sorted(value)
+            _capped(sanitized, key, value, keys_only=True)
+        elif key in _DETAIL_ORDER_MAP_KEYS and isinstance(value, Mapping):
+            _capped(sanitized, key, value, keys_only=False)
         else:
             sanitized[key] = value
     return sanitized
@@ -164,6 +196,9 @@ def _sanitize_snapshot(snapshot: HealthSnapshot) -> HealthSnapshot:
         live_runs=tuple(_sanitize_run(r) for r in snapshot.live_runs),
         last_end_of_day=None if snapshot.last_end_of_day is None else _sanitize_run(snapshot.last_end_of_day),
         last_opening=None if snapshot.last_opening is None else _sanitize_run(snapshot.last_opening),
+        quality_pending=None if snapshot.quality_pending is None else {
+            key: snapshot.quality_pending[key] for key in sorted(snapshot.quality_pending)[:MAX_LISTED_ORDERS]
+        },
     )
 
 
@@ -234,10 +269,22 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
             "without_projection": snapshot.orders_without_projection,
         }))
     eod = snapshot.last_end_of_day
-    if eod is not None and eod.status == "COMPLETED" and eod.detail.get("not_evaluated"):
+    if snapshot.quality_pending is not None:
+        if snapshot.quality_pending:  # D22: pending sessions across recent END_OF_DAY runs, minus rechecked ones
+            reasons = Counter(snapshot.quality_pending.values())
+            causes.append(Cause("QUALITY_NOT_EVALUATED", Severity.DEGRADED, {
+                "session_days": sorted({key.rsplit(":", 1)[1] for key in snapshot.quality_pending}),
+                "count": len(snapshot.quality_pending),
+                "reasons": dict(sorted(reasons.items())),
+            }))
+    elif eod is not None and eod.status == "COMPLETED" and eod.detail.get("not_evaluated"):
         reasons = Counter(eod.detail["not_evaluated"].values())
         causes.append(Cause("QUALITY_NOT_EVALUATED", Severity.DEGRADED,
                             {"session_day": eod.detail.get("session_day"), "reasons": dict(sorted(reasons.items()))}))
+    for kind, code in (("OPENING", "OPENING_MISSING"), ("END_OF_DAY", "END_OF_DAY_MISSING")):
+        days = (snapshot.missing_runs or {}).get(kind)
+        if days:  # D38: a scheduled job that never completed for a past session
+            causes.append(Cause(code, Severity.DEGRADED, {"session_days": list(days)}))
     opening = snapshot.last_opening
     if opening is not None and (opening.status == "FAILED" or opening.detail.get("source_failures")):
         raw_error = opening.detail.get("error")
@@ -253,6 +300,10 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
     unverifiable = snapshot.actionability.get(ACTIONABILITY_UNVERIFIABLE, 0)
     if unverifiable:
         causes.append(Cause(ACTIONABILITY_UNVERIFIABLE, Severity.INFO, {"count": unverifiable}))
+    if snapshot.undeliverable_alerts:  # n8n is never in the critical path: visible, never degrading
+        causes.append(Cause("UNDELIVERABLE_ALERTS", Severity.INFO, {"count": snapshot.undeliverable_alerts}))
+    if snapshot.order_event_alerts_behind:
+        causes.append(Cause("ORDER_EVENT_ALERTS_BEHIND", Severity.INFO, {"count": snapshot.order_event_alerts_behind}))
 
     causes.sort(key=lambda cause: _RANK[cause.severity])
     worst = min((_RANK[c.severity] for c in causes), default=_RANK[Severity.INFO])
@@ -271,6 +322,18 @@ def schema_not_at_head(found: str | None) -> HealthReport:
     }),), None)
 
 
+def is_statement_timeout(error: BaseException) -> bool:
+    """psycopg reports a statement_timeout cancellation as SQLSTATE 57014 (query_canceled)."""
+    return getattr(getattr(error, "orig", None), "sqlstate", None) == QUERY_CANCELED_SQLSTATE
+
+
+def health_query_timeout(error: Exception, timeout_ms: int) -> HealthReport:
+    """D28 (M4): the database answered but a health query exceeded its budget. Degraded, never 503."""
+    return HealthReport(HealthState.DEGRADED, (Cause("HEALTH_QUERY_TIMEOUT", Severity.DEGRADED, {
+        "error": type(error).__name__, "timeout_ms": timeout_ms,
+    }),), None)
+
+
 _RUNS = text(
     """
     SELECT r.run_id, r.kind, r.started_at, r.data_as_of, latest.status, latest.detail
@@ -286,9 +349,12 @@ _RUNS = text(
 
 _REVIEW_REASONS = text(
     """
-    SELECT split_part(reason, ':', 1) AS reason, COUNT(DISTINCT st.order_id) AS orders
-    FROM order_state st JOIN orders o ON o.id = st.order_id,
-         jsonb_array_elements_text(st.state_document->'review_reasons') AS reason
+    SELECT COALESCE(split_part(r.reason, ':', 1), 'UNSPECIFIED') AS reason, COUNT(DISTINCT st.order_id) AS orders
+    FROM order_state st
+    JOIN orders o ON o.id = st.order_id
+    LEFT JOIN LATERAL jsonb_array_elements_text(
+        COALESCE(st.state_document->'review_reasons', '[]'::jsonb)
+    ) AS r(reason) ON true
     WHERE st.needs_review AND NOT o.replay
     GROUP BY 1 ORDER BY 1
     """
@@ -300,6 +366,42 @@ _ORDERS_WITHOUT_PROJECTION = (
     .where(orders.c.replay.is_(False), order_state.c.order_id.is_(None))
     .order_by(orders.c.created_at, orders.c.id)
 )
+
+
+_JOB_RUNS = text(
+    """
+    SELECT r.kind, (latest.detail->>'session_day')::date AS session_day, latest.status
+    FROM evaluation_runs r
+    JOIN LATERAL (
+        SELECT status, detail FROM evaluation_run_status s WHERE s.run_id = r.run_id ORDER BY s.id DESC LIMIT 1
+    ) latest ON true
+    WHERE r.kind IN ('OPENING', 'END_OF_DAY') AND latest.detail->>'session_day' IS NOT NULL
+    """
+)
+
+
+def missing_job_runs(conn: Connection, *, now: datetime) -> dict[str, list[str]]:
+    """D38: past sessions after the first recorded OPENING/END_OF_DAY session without a COMPLETED run past grace."""
+    rows = conn.execute(_JOB_RUNS).all()
+    if not rows:
+        return {}  # no scheduled job ever ran here: a fresh database is not degraded
+    anchor = min(row.session_day for row in rows)
+    completed = {(row.kind, row.session_day) for row in rows if row.status == "COMPLETED"}
+    start = max(datetime.combine(anchor, time(12), tzinfo=UTC), now - MISSING_RUN_LOOKBACK)
+    if start >= now:
+        return {}
+    missing: dict[str, list[str]] = {}
+    for session in calendar_for_window(start, now).sessions:
+        if session.day <= anchor:
+            continue
+        if session.open_utc + OPENING_GRACE <= now and ("OPENING", session.day) not in completed:
+            missing.setdefault("OPENING", []).append(session.day.isoformat())
+        eod_deadline = max(
+            session.close_utc + END_OF_DAY_GRACE, datetime.combine(session.day, END_OF_DAY_FLOOR, tzinfo=_MARKET_TZ)
+        )
+        if eod_deadline <= now and ("END_OF_DAY", session.day) not in completed:
+            missing.setdefault("END_OF_DAY", []).append(session.day.isoformat())
+    return missing
 
 
 def _runs(conn: Connection, kind: str, limit: int) -> tuple[RunSummary, ...]:
@@ -341,17 +443,32 @@ def collect_health_snapshot(conn: Connection, *, now: datetime) -> HealthSnapsho
         orders_without_projection_ids=tuple(missing[:MAX_LISTED_ORDERS]),
         needs_review={row.reason: int(row.orders) for row in conn.execute(_REVIEW_REASONS)},
         actionability=actionability_outcomes(conn, since=since),
+        quality_pending={
+            f"{item.order_id}:{item.session_day.isoformat()}": item.reason for item in pending_quality_sessions(conn)
+        },
+        missing_runs=missing_job_runs(conn, now=now),
+        undeliverable_alerts=undeliverable_alerts(conn),
+        order_event_alerts_behind=order_event_alerts_behind(conn),
     )
 
 
-def build_health_report(engine: Engine, *, now: datetime, eval_interval_minutes: int) -> HealthReport:
-    """Connection errors are DATABASE_UNAVAILABLE; any other exception is a defect and propagates (500)."""
+def build_health_report(
+    engine: Engine, *, now: datetime, eval_interval_minutes: int, statement_timeout_ms: int = HEALTH_STATEMENT_TIMEOUT_MS
+) -> HealthReport:
+    """Connection errors are DATABASE_UNAVAILABLE; a statement timeout is HEALTH_QUERY_TIMEOUT (D28); any other
+    exception is a defect and propagates (500)."""
     try:
         with engine.connect() as conn:
+            conn.execute(text("SELECT set_config('statement_timeout', :value, true)"),
+                         {"value": str(statement_timeout_ms)})
             revision = schema_revision(conn)
             if revision != EXPECTED_SCHEMA_REVISION:
                 return schema_not_at_head(revision)
             snapshot = collect_health_snapshot(conn, now=now)
-    except (OperationalError, InterfaceError, PoolTimeoutError) as exc:
+    except OperationalError as exc:
+        if is_statement_timeout(exc):
+            return health_query_timeout(exc, statement_timeout_ms)
+        return database_unavailable(exc)
+    except (InterfaceError, PoolTimeoutError) as exc:
         return database_unavailable(exc)
     return evaluate_health(snapshot, eval_interval_minutes=eval_interval_minutes)

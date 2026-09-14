@@ -1,5 +1,7 @@
+from datetime import datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select, text
 
 from core.domain.models import Direction, Event, EventType
@@ -254,3 +256,21 @@ def test_bars_are_read_as_of_the_run_watermark(engine):
         batch = conn.execute(select(tables.bar_batches.c.ingested_at).where(
             tables.bar_batches.c.batch_id == filled.prepared.bar_batch_id)).scalar_one()
     assert batch <= report.data_as_of
+
+
+def test_failed_cycle_records_its_market_now_and_releases_the_lock(engine, monkeypatch):
+    submit_default(engine)
+
+    def exploding(outcomes):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cycle_module, "split_errors", exploding)
+    with pytest.raises(RuntimeError):
+        cycle(engine, FakeBarSource(scenario_bars()), "10:30")
+    with engine.connect() as conn:
+        run_id = conn.execute(select(tables.evaluation_runs.c.run_id)).scalar_one()
+        status, detail = latest_run_status(conn, run_id)
+        assert conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": CYCLE_LOCK_KEY}).scalar_one()
+    assert status is RunStatus.FAILED
+    assert datetime.fromisoformat(detail["market_now"]) == et(DAY, "10:30")
+    assert detail["error"].startswith("RuntimeError")

@@ -76,6 +76,8 @@ def quarantine(engine: Engine, error: LedgerIntegrityError) -> bool:
     other than `False` — callers such as `run_guarded` always see the original error. When the
     order itself does not exist there is nothing to lock or freeze, so the second transaction
     is skipped outright rather than attempted and recorded as a second failure.
+
+    Replay orders are never frozen (D29): the incident is recorded and False is returned.
     """
     with engine.begin() as conn:
         order_exists = record_incident(conn, error)
@@ -84,6 +86,10 @@ def quarantine(engine: Engine, error: LedgerIntegrityError) -> bool:
     try:
         with engine.begin() as conn:
             order = lock_order(conn, error.order_id)
+            if order.replay:
+                # D15/D29 (M5): replay orders are derived history and accept no writes; the committed
+                # incident row alone records the failure.
+                return False
             projection = load_projection(conn, order.id)
             if projection is None:
                 return False
