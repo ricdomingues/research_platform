@@ -18,6 +18,7 @@ from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from virtual_orders.alerts.outbox import order_event_alerts_behind, undeliverable_alerts
 from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE, actionability_outcomes
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.readmodels.incidents import (
@@ -108,6 +109,8 @@ class HealthSnapshot:
     actionability: dict[str, int]  # result -> ACTIONABILITY runs within INCIDENT_WINDOW
     quality_pending: dict[str, str] | None = None  # "<order_id>:<session_day>" -> D12 reason (D22); None = not collected
     missing_runs: dict[str, list[str]] | None = None  # "OPENING"/"END_OF_DAY" -> session days without a run (D38)
+    undeliverable_alerts: int | None = None  # alerts expired within 7 days (D24); INFO only
+    order_event_alerts_behind: int | None = None  # unmarked events past the enqueue lookback (D35); INFO only
 
 
 @dataclass(frozen=True)
@@ -292,6 +295,10 @@ def evaluate_health(snapshot: HealthSnapshot, *, eval_interval_minutes: int) -> 
     unverifiable = snapshot.actionability.get(ACTIONABILITY_UNVERIFIABLE, 0)
     if unverifiable:
         causes.append(Cause(ACTIONABILITY_UNVERIFIABLE, Severity.INFO, {"count": unverifiable}))
+    if snapshot.undeliverable_alerts:  # n8n is never in the critical path: visible, never degrading
+        causes.append(Cause("UNDELIVERABLE_ALERTS", Severity.INFO, {"count": snapshot.undeliverable_alerts}))
+    if snapshot.order_event_alerts_behind:
+        causes.append(Cause("ORDER_EVENT_ALERTS_BEHIND", Severity.INFO, {"count": snapshot.order_event_alerts_behind}))
 
     causes.sort(key=lambda cause: _RANK[cause.severity])
     worst = min((_RANK[c.severity] for c in causes), default=_RANK[Severity.INFO])
@@ -432,6 +439,8 @@ def collect_health_snapshot(conn: Connection, *, now: datetime) -> HealthSnapsho
             f"{item.order_id}:{item.session_day.isoformat()}": item.reason for item in pending_quality_sessions(conn)
         },
         missing_runs=missing_job_runs(conn, now=now),
+        undeliverable_alerts=undeliverable_alerts(conn),
+        order_event_alerts_behind=order_event_alerts_behind(conn),
     )
 
 
