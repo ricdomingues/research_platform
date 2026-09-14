@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI
 
 from virtual_orders.api.auth import require_api_key
 from virtual_orders.api.errors import install_error_handlers
-from virtual_orders.api.routes import orders, replay, signals
+from virtual_orders.api.routes import metrics, orders, replay, signals
 from virtual_orders.services import Services
 
 
@@ -28,4 +28,5 @@ def create_app(services: Services) -> FastAPI:
     app.include_router(signals.router)
     app.include_router(orders.router)
     app.include_router(replay.router)
+    app.include_router(metrics.router)
     return app
