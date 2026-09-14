@@ -153,7 +153,11 @@ def test_neutral_infrastructure_never_imports_the_application_layer(path: Path) 
     "path", [SRC / relative for relative in APPLICATION_NEUTRAL if (SRC / relative).exists()], ids=_rel
 )
 def test_services_and_config_never_import_adapters_or_provider_libraries(path: Path) -> None:
-    assert _offending(path, PROVIDER_ADAPTERS + PROVIDER_LIBRARIES) == []
+    assert _offending(
+        path,
+        PROVIDER_ADAPTERS + PROVIDER_LIBRARIES
+        + ("virtual_orders.api", "virtual_orders.bootstrap", "fastapi", "starlette", "uvicorn"),
+    ) == []
 
 
 def test_boundary_scan_covers_the_application_layer() -> None:
