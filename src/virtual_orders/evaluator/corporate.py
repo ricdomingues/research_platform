@@ -53,13 +53,14 @@ _NON_FINAL = text(
 
 def _lookup(
     source: DividendSource, ticker: str, ex_date: date, failures: dict[str, str]
-) -> DividendRecord | None:
+) -> tuple[DividendRecord | None, bool]:
+    """(record for the ex-date or None, whether the source raised). Empty and unavailable are different (D23)."""
     try:
         records = source.fetch_dividends(ticker, ex_date, ex_date)
     except (SourceUnavailable, SourceDataError) as exc:
         failures[f"{source.name}:{ticker}"] = str(exc)
-        return None
-    return next((record for record in records if record.ex_date == ex_date), None)
+        return None, True
+    return next((record for record in records if record.ex_date == ex_date), None), False
 
 
 def opening_window(ex_date: date, now: datetime) -> tuple[Session, Session]:
@@ -115,6 +116,27 @@ def _dividend_command(
     return command
 
 
+def _unverifiable_command(ex_date: date, position_confirmed_by: datetime) -> Callable[[CommandInput], StepResult]:
+    """Spec 6 / D23: both dividend sources unavailable -> review, never a credit and never a dividends row."""
+    event_key = f"DIVIDEND:{ex_date.isoformat()}"
+    ref = ex_date.isoformat()
+
+    def command(inp: CommandInput) -> StepResult:
+        state = inp.projection.state
+        if state.is_final or state.frozen or event_key in known_hashes(inp.conn, inp.order.id):
+            return StepResult(state)
+        last_to = last_segment_end(inp.conn, inp.order.id)
+        if last_to is None or last_to < position_confirmed_by:
+            unconfirmed: StepResult = inp.model.flag_review(state, "DIVIDEND_POSITION_UNCONFIRMED", ref)
+            return unconfirmed
+        if state.qty_open <= 0:
+            return StepResult(state)
+        flagged: StepResult = inp.model.flag_review(state, "DIVIDEND_UNVERIFIED", ref)
+        return flagged
+
+    return command
+
+
 def apply_dividends(
     engine: Engine,
     *,
@@ -138,7 +160,14 @@ def apply_dividends(
 
     outcomes: list[OrderOutcome] = []
     for ticker, order_ids in sorted(by_ticker.items()):
-        first, second = _lookup(primary, ticker, ex_date, failures), _lookup(secondary, ticker, ex_date, failures)
+        first, first_failed = _lookup(primary, ticker, ex_date, failures)
+        second, second_failed = _lookup(secondary, ticker, ex_date, failures)
+        if first_failed and second_failed:
+            unverifiable = _unverifiable_command(ex_date, position_confirmed_by)
+            outcomes.extend(
+                isolated(order_id, partial(apply_command, engine, order_id, unverifiable)) for order_id in order_ids
+            )
+            continue
         if first is None and second is None:
             continue
         first_amount = None if first is None else first.amount
