@@ -50,8 +50,14 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
 
+      # Plan 1 (main before PR #1) predates the lint and type tooling; every later revision declares
+      # ruff and mypy in the dev group and [tool.mypy], and from then on these steps always run.
       - name: Ruff
         run: |
+          if ! grep -q '"ruff==' pyproject.toml; then
+            echo "::notice::ruff is not declared on this revision; skipped"
+            exit 0
+          fi
           paths=""
           for p in src tests migrations; do
             if [ -e "$p" ]; then paths="$paths $p"; fi
@@ -59,7 +65,12 @@ jobs:
           uv run ruff check $paths
 
       - name: Mypy (strict)
-        run: uv run mypy
+        run: |
+          if ! grep -q '^\[tool.mypy\]' pyproject.toml; then
+            echo "::notice::mypy is not configured on this revision; skipped"
+            exit 0
+          fi
+          uv run mypy
 
       - name: Frozen core
         run: |
