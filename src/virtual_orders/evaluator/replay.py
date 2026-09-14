@@ -49,7 +49,11 @@ class ReplayMode(StrEnum):
 
 
 class ReplaySelectionError(ValueError):
-    pass
+    """The message is for logs only; `codes` is the fixed, free-text-free list the API surfaces (I3)."""
+
+    def __init__(self, message: str, *, codes: Sequence[str]) -> None:
+        super().__init__(message)
+        self.codes = list(codes)
 
 
 @dataclass(frozen=True)
@@ -69,7 +73,7 @@ def select_source_orders(
 ) -> list[UUID]:
     has_interval = created_from is not None or created_to is not None
     if order_ids is not None and has_interval:
-        raise ReplaySelectionError("use order_ids or an interval, not both")
+        raise ReplaySelectionError("use order_ids or an interval, not both", codes=["SELECTOR_CONFLICT"])
     if order_ids is not None:
         unique = list(dict.fromkeys(order_ids))
         replays = sorted(
@@ -79,10 +83,12 @@ def select_source_orders(
             ).scalars()
         )
         if replays:
-            raise ReplaySelectionError(f"replay orders cannot be replayed: {', '.join(replays)}")
+            raise ReplaySelectionError(f"replay orders cannot be replayed: {', '.join(replays)}",
+                                       codes=[f"SOURCE_IS_REPLAY:{order_id}" for order_id in replays])
         return unique
     if created_from is None or created_to is None:
-        raise ReplaySelectionError("an interval needs both created_from and created_to")
+        raise ReplaySelectionError("an interval needs both created_from and created_to",
+                                   codes=["INTERVAL_INCOMPLETE"])
     return list(conn.execute(
         select(orders.c.id)
         .where(orders.c.replay.is_(False), orders.c.created_at >= created_from, orders.c.created_at < created_to)
@@ -189,18 +195,23 @@ def validate_recalculation_request(
         try:
             get_fill_model(fill_model_version)
         except KeyError as exc:
-            raise ReplaySelectionError(f"unknown fill_model_version: {fill_model_version}") from exc
+            raise ReplaySelectionError(f"unknown fill_model_version: {fill_model_version}",
+                                       codes=[f"FILL_MODEL_VERSION_UNKNOWN:{fill_model_version}"]) from exc
     overrides = dict(config_overrides or {})
     unknown = sorted(set(overrides) - {f.name for f in fields(FillConfig)})
     if unknown:
-        raise ReplaySelectionError(f"unknown config_overrides: {', '.join(unknown)}")
+        raise ReplaySelectionError(f"unknown config_overrides: {', '.join(unknown)}",
+                                   codes=[f"CONFIG_OVERRIDES_UNKNOWN:{key}" for key in unknown])
     rejected = sorted(set(overrides) & REJECTED_OVERRIDES)
     if rejected:
-        raise ReplaySelectionError(f"config_overrides not applied by RECALCULATE: {', '.join(rejected)}")
+        raise ReplaySelectionError(f"config_overrides not applied by RECALCULATE: {', '.join(rejected)}",
+                                   codes=[f"CONFIG_OVERRIDES_NOT_APPLIED:{key}" for key in rejected])
     try:
         config_from_snapshot({**config_to_snapshot(FillConfig()), **to_document(overrides)})
     except (TypeError, ValueError, ArithmeticError) as exc:
-        raise ReplaySelectionError(f"invalid config_overrides: {exc}") from exc
+        # D19/I3: the FillConfig/decimal parser's message may quote the caller's raw override value; it never
+        # reaches the HTTP body (only the fixed code does), but it stays in the exception text for logs.
+        raise ReplaySelectionError(f"invalid config_overrides: {exc}", codes=["CONFIG_OVERRIDES_INVALID"]) from exc
 
 
 def validate_overrides_for_sources(
@@ -220,7 +231,9 @@ def validate_overrides_for_sources(
         except (TypeError, ValueError, ArithmeticError):
             rejected.append(str(row.id))
     if rejected:
-        raise ReplaySelectionError(f"config_overrides invalid for source orders: {', '.join(rejected)}")
+        # I3: the Task 5 per-source error keeps only order ids in the API-facing codes, never the parser message.
+        raise ReplaySelectionError(f"config_overrides invalid for source orders: {', '.join(rejected)}",
+                                   codes=rejected)
 
 
 def _chunks_by_dividend(
@@ -336,14 +349,15 @@ def recalculate_orders(
     data_as_of: datetime | None = None,
 ) -> ReplayReport:
     if data_as_of is not None and data_as_of.tzinfo is None:
-        raise ReplaySelectionError("data_as_of must be timezone-aware")
+        raise ReplaySelectionError("data_as_of must be timezone-aware", codes=["DATA_AS_OF_NOT_AWARE"])
     validate_recalculation_request(fill_model_version, config_overrides)
     with engine.connect() as conn:
         source_ids = select_source_orders(conn, order_ids=order_ids, created_from=created_from, created_to=created_to)
         validate_overrides_for_sources(conn, source_ids, config_overrides)
     watermark = acquire_data_as_of(engine)
     if data_as_of is not None and data_as_of > watermark:
-        raise ReplaySelectionError("data_as_of cannot be later than the ingestion watermark")
+        raise ReplaySelectionError("data_as_of cannot be later than the ingestion watermark",
+                                   codes=["DATA_AS_OF_AFTER_WATERMARK"])
     as_of = (data_as_of or watermark).astimezone(UTC)
     with engine.begin() as conn:
         run = start_run(conn, RunKind.REPLAY, as_of, code_version, detail={

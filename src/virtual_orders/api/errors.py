@@ -59,7 +59,9 @@ def to_api_error(exc: Exception, method: str) -> ApiError:
     if isinstance(exc, ReplayOrderReadOnly):
         return ApiError(409, "REPLAY_ORDER_READ_ONLY", detail={"order_id": exc.order_id})
     if isinstance(exc, ReplaySelectionError):
-        return ApiError(422, "REPLAY_REQUEST_INVALID", detail={"errors": [str(exc)]})
+        # I3: fixed codes only, never str(exc) (which may quote a caller-supplied override value); the full
+        # text is logged by the caller when it re-raises, never sent in the response body.
+        return ApiError(422, "REPLAY_REQUEST_INVALID", detail={"errors": exc.codes})
     if isinstance(exc, AlertRuleInvalid):
         return ApiError(422, "ALERT_RULE_INVALID", detail={"errors": exc.errors})
     if isinstance(exc, WatchlistTickerNotFound):

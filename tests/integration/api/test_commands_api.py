@@ -3,22 +3,26 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from core.domain.models import Origin
+from core.domain.models import FillConfig, Origin
 from tests.integration.api.conftest import post_json
 from tests.integration.support import (
     CODE_VERSION,
     DAY,
     PRICE_SOURCE,
+    SIGNAL_CREATED_AT,
     TICKER,
     backdated_batch,
     count,
     raw,
     scenario_bars,
     signal_body,
+    submit_default,
 )
 from tests.support import et
+from virtual_orders.evaluator import replay as replay_module
 from virtual_orders.evaluator.cycle import run_live_cycle
 from virtual_orders.evaluator.replay import reproduce_orders
+from virtual_orders.evaluator.signals import submit_signal
 from virtual_orders.ledger.orders import get_order
 from virtual_orders.ledger.runs import get_run, list_segments
 
@@ -183,7 +187,9 @@ def test_rejected_recalculate_request_creates_no_evaluation_run(api):
     })
 
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "REPLAY_REQUEST_INVALID"
+    error = response.json()["error"]
+    assert error["code"] == "REPLAY_REQUEST_INVALID"
+    assert error["detail"] == {"errors": ["CONFIG_OVERRIDES_NOT_APPLIED:dividend_tolerance"]}
     assert count(api.services.engine, "evaluation_runs") == before
 
 
@@ -221,13 +227,48 @@ def test_service_level_replay_rejections_are_422(api):
     order_id = closed_order(api)
     replay_id = reproduce_orders(api.services.engine, code_version=CODE_VERSION, order_ids=[order_id]).created[order_id]
     cases = [
-        {"mode": "REPRODUCE"},
-        {"mode": "REPRODUCE", "order_ids": [str(replay_id)]},
-        {"mode": "RECALCULATE", "order_ids": [str(order_id)], "config_overrides": {"dividend_tolerance": Decimal("0.1")}},
-        {"mode": "RECALCULATE", "order_ids": [str(order_id)], "data_as_of": "2100-01-01T00:00:00Z"},
+        ({"mode": "REPRODUCE"}, ["INTERVAL_INCOMPLETE"]),
+        ({"mode": "REPRODUCE", "order_ids": [str(replay_id)]}, [f"SOURCE_IS_REPLAY:{replay_id}"]),
+        ({"mode": "RECALCULATE", "order_ids": [str(order_id)],
+          "config_overrides": {"dividend_tolerance": Decimal("0.1")}},
+         ["CONFIG_OVERRIDES_NOT_APPLIED:dividend_tolerance"]),
+        ({"mode": "RECALCULATE", "order_ids": [str(order_id)], "data_as_of": "2100-01-01T00:00:00Z"},
+         ["DATA_AS_OF_AFTER_WATERMARK"]),
     ]
-    for body in cases:
+    for body, expected_codes in cases:
         response = post_json(api.client, "/replay", body)
         assert response.status_code == 422, body
-        assert response.json()["error"]["code"] == "REPLAY_REQUEST_INVALID"
-        assert response.json()["error"]["detail"]["errors"]
+        error = response.json()["error"]
+        assert error["code"] == "REPLAY_REQUEST_INVALID"
+        # I3: fixed codes only, no exception text.
+        assert error["detail"] == {"errors": expected_codes}
+
+
+def test_recalculate_per_source_override_rejection_keeps_only_order_ids(api, monkeypatch):
+    """M6/I3: an override valid on its own but invalid combined with one source's stored config must not leak
+    the validator's free-text message; the per-source error keeps only the rejected order id."""
+    lenient = submit_default(api.services.engine).auto_order_id
+    strict = submit_signal(
+        api.services.engine, signal_body(client_signal_id="strict"),
+        config=FillConfig(stop_slippage_bps=Decimal("7")), code_version=CODE_VERSION,
+        price_source=PRICE_SOURCE, now=SIGNAL_CREATED_AT,
+    ).auto_order_id
+    original = replay_module.config_from_snapshot
+
+    def cross_field_rule(document):
+        config = original(document)
+        if config.stop_slippage_bps == Decimal("7") and config.risk_amount == Decimal("250"):
+            raise ValueError("risk_amount 250 is not allowed with stop_slippage_bps 7 (test rule)")
+        return config
+
+    monkeypatch.setattr(replay_module, "config_from_snapshot", cross_field_rule)
+
+    response = post_json(api.client, "/replay", {
+        "mode": "RECALCULATE", "order_ids": [str(lenient), str(strict)], "config_overrides": {"risk_amount": "250"},
+    })
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "REPLAY_REQUEST_INVALID"
+    assert error["detail"] == {"errors": [str(strict)]}
+    assert "not allowed" not in response.text and str(lenient) not in response.text

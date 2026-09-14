@@ -128,7 +128,11 @@ def test_malformed_json_is_422(api):
     for raw in ("not json", "[1, 2]", '{"stop": NaN}'):
         response = api.client.post("/signals", content=raw, headers={"Content-Type": "application/json"})
         assert response.status_code == 422, raw
-        assert response.json()["error"]["code"] == "INVALID_JSON"
+        error = response.json()["error"]
+        assert error["code"] == "INVALID_JSON"
+        # I3: never the decoder's own message (it can quote the raw request bytes).
+        assert "message" not in error["detail"]
+        assert set(error["detail"]) <= {"line", "column", "code"}
 
 
 def test_list_signals_filters_by_market_date_and_strategy(api):

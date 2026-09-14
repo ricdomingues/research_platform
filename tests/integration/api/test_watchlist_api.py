@@ -64,7 +64,12 @@ def test_invalid_rules_unknown_tickers_and_bad_json(api):
     missing = api.client.delete("/watchlist/MSFT")
     assert missing.status_code == 404 and missing.json()["error"]["code"] == "WATCHLIST_TICKER_NOT_FOUND"
     bad_json = api.client.post("/watchlist/MSFT/alerts", content="[1]", headers={"Content-Type": "application/json"})
-    assert bad_json.status_code == 422 and bad_json.json()["error"]["code"] == "INVALID_JSON"
+    assert bad_json.status_code == 422
+    assert bad_json.json()["error"] == {"code": "INVALID_JSON", "reason": None, "detail": {"code": "NOT_AN_OBJECT"}}
+    truncated = api.client.post("/watchlist/MSFT/alerts", content="{", headers={"Content-Type": "application/json"})
+    assert truncated.status_code == 422
+    error = truncated.json()["error"]
+    assert error["code"] == "INVALID_JSON" and "message" not in error["detail"]  # I3: no decoder text, ever
     bad_id = api.client.delete("/alerts/not-a-uuid")
     assert bad_id.status_code == 422 and bad_id.json()["error"]["code"] == "REQUEST_INVALID"
 

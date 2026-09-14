@@ -64,7 +64,11 @@ async def read_json_object(request: Request) -> dict[str, Any]:
     try:
         body = json.loads(raw, parse_float=Decimal, parse_constant=_reject_constant)
     except ValueError as exc:
-        raise ApiError(422, "INVALID_JSON", detail={"message": str(exc)}) from exc
+        # I3: never the decoder's message (it can quote raw request bytes); position fields only.
+        detail: dict[str, Any] = {}
+        if isinstance(exc, json.JSONDecodeError):
+            detail = {"line": exc.lineno, "column": exc.colno}
+        raise ApiError(422, "INVALID_JSON", detail=detail) from exc
     if not isinstance(body, dict):
-        raise ApiError(422, "INVALID_JSON", detail={"message": "body must be a JSON object"})
+        raise ApiError(422, "INVALID_JSON", detail={"code": "NOT_AN_OBJECT"})
     return body
