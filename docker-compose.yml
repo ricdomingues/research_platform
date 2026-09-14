@@ -56,7 +56,8 @@ services:
     pull_policy: never
     command: ["python", "-m", "virtual_orders.worker", "run"]
     env_file: .env
-    restart: unless-stopped  # exit 3 (lock lost, D39) and 4 (database down at start, D49) are restarted
+    restart: unless-stopped  # exit 2 (invalid config OR another worker holds the lock -- check `docker compose logs worker`
+                             # for CONFIG_INVALID), 3 (lock lost, D39) and 4 (database down at start, D49) all restart
     stop_signal: SIGTERM
     stop_grace_period: 150s  # an end-of-day or recheck in progress finishes on SIGTERM (D20)
     depends_on:

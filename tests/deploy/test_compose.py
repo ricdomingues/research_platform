@@ -110,16 +110,16 @@ def test_both_images_are_built_from_their_own_lock_without_dev_dependencies_as_a
         lines = dockerfile_lines(dockerfile)
         assert lines[0].startswith("FROM python:3.12"), dockerfile
         assert "COPY pyproject.toml uv.lock ./" in lines, dockerfile
-        assert any(line.startswith("RUN uv sync --frozen --no-dev") for line in lines), dockerfile
+        assert any(line.startswith("RUN uv sync --locked --no-dev") for line in lines), dockerfile
         users = [line for line in lines if line.startswith("USER ")]
-        assert users and users[-1] != "USER root", dockerfile
+        assert users and users[-1] == "USER vo", dockerfile  # the last USER directive drops root, by name
         copies = [line for line in lines if line.startswith("COPY ")]
         assert not any(".env" in line or "tests" in line for line in copies), dockerfile
         uv_images |= {line.split()[1] for line in copies if line.startswith("COPY --from=ghcr.io/astral-sh/uv:")}
     assert len(uv_images) == 1  # the same pinned uv in both images (D58)
     assert not any("dashboard" in line for line in dockerfile_lines(ROOT / "Dockerfile"))  # D56
     assert {".env", ".git", ".venv", "tests", "dashboard"} <= set((ROOT / ".dockerignore").read_text().split())
-    assert {".venv", "tests"} <= set((ROOT / "dashboard" / ".dockerignore").read_text().split())
+    assert {".venv", "tests", ".env", "**/.env"} <= set((ROOT / "dashboard" / ".dockerignore").read_text().split())
 
 
 def test_env_example_lists_every_setting_with_placeholders_only_and_loads():

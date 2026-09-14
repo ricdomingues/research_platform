@@ -11,12 +11,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project
 
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --locked --no-dev
 
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA} \
