@@ -46,8 +46,11 @@ def render(client: ApiClient) -> None:
         st.subheader("Alertas EXPIRED")
         st.dataframe(outbox_rows(expired), hide_index=True)
     log = guarded(lambda: client.health_log(limit=20))
-    if log:
-        last = log[0]
-        causes = ", ".join(last.get("cause_codes") or []) or "sem causas"
-        st.markdown(f"**Último health_state_log:** {last['state']} · {causes} · {fmt_ts(last.get('observed_at'))}")
-        st.dataframe(health_log_rows(log), hide_index=True)
+    if log is not None:
+        if not log:
+            st.caption("Nenhuma transição registrada.")
+        else:
+            last = log[0]
+            causes = ", ".join(last.get("cause_codes") or []) or "sem causas"
+            st.markdown(f"**Último health_state_log:** {last['state']} · {causes} · {fmt_ts(last.get('observed_at'))}")
+            st.dataframe(health_log_rows(log), hide_index=True)

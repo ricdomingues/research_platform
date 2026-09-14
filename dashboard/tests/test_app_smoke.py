@@ -1,7 +1,9 @@
 """AppTest smoke over the real entry point with a fake API client (D40). No server, no network."""
 
+import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -9,7 +11,22 @@ from streamlit.testing.v1 import AppTest
 from dashboard.client import ApiRequestFailed, ApiUnreachable
 
 APP = str(Path(__file__).resolve().parents[1] / "dashboard" / "app.py")  # dashboard/dashboard/app.py
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "api"  # recorded from the real API (D57)
 TS = "2025-11-25T15:30:00+00:00"
+
+
+def _load(name: str) -> Any:
+    return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"), parse_float=Decimal)
+
+
+ORDERS = _load("orders")["orders"]
+ORDERS_REPLAY = _load("orders_replay")["orders"]
+ORDER_DETAIL = _load("order_detail")
+ORDER_CHART = _load("order_chart")
+MARKET_BARS = _load("market_bars")
+METRICS_BY_ORIGIN = _load("metrics_by_origin")
+METRICS_GENERIC = _load("metrics")
+DETAIL_ORDER_ID = str(ORDER_DETAIL["order"]["order_id"])  # the only order id with recorded detail/chart fixtures
 SUMMARY = {
     "trades": 12, "win_rate": Decimal("0.5833"), "avg_r": Decimal("0.42"), "expectancy_r": Decimal("0.42"),
     "profit_factor": Decimal("1.8"), "max_drawdown_r": Decimal("2.5"), "avg_duration_seconds": Decimal("3600"),
@@ -38,10 +55,13 @@ class FakeApi:
         self.manual_error: Exception | None = None
 
     def metrics(self, **kwargs):
-        return {"groups": [{"key": None, "summary": SUMMARY}]}
+        group_by = kwargs.get("group_by")
+        if group_by is None:  # overview.render: the hand-built SUMMARY keeps the review/warning assertions exact
+            return {"groups": [{"key": None, "summary": SUMMARY}]}
+        return METRICS_BY_ORIGIN if group_by == "origin" else METRICS_GENERIC
 
     def orders(self, **kwargs):
-        return []
+        return ORDERS_REPLAY if kwargs.get("replay") else ORDERS
 
     def signals(self, **kwargs):
         return [SIGNAL]
@@ -73,9 +93,18 @@ class FakeApi:
     def watchlist(self):
         return [{"ticker": "MSFT", "added_at": TS, "rules": []}]
 
+    def order_detail(self, order_id):
+        if order_id != DETAIL_ORDER_ID:  # only this order id has a recorded detail fixture (D57)
+            raise LookupError(order_id)
+        return ORDER_DETAIL
+
+    def order_chart(self, order_id):
+        if order_id != DETAIL_ORDER_ID:  # ditto for the chart fixture
+            raise LookupError(order_id)
+        return ORDER_CHART
+
     def market_bars(self, ticker, start, end, *, source=None):
-        return {"ticker": ticker, "price_source": "alpaca_iex", "data_as_of": TS, "vwap_method": "SESSION_VWAP",
-                "bars": [], "vwap": []}
+        return MARKET_BARS
 
     def pressure(self, ticker, **kwargs):
         return PRESSURE
@@ -161,6 +190,54 @@ def test_market_page_always_labels_pressure_as_an_estimate():
 def test_watchlist_page_lists_tickers():
     at = open_page(FakeApi(), "Watchlist e alertas")
     assert at.title[0].value == "Watchlist e regras de alerta" and not at.exception
+
+
+def test_watchlist_page_shows_the_empty_message_only_when_the_call_actually_succeeded():
+    class EmptyWatchlist(FakeApi):
+        def watchlist(self):
+            return []
+
+    at = open_page(EmptyWatchlist(), "Watchlist e alertas")
+    assert "Watchlist vazia." in values(at.info)
+
+    class FailingWatchlist(FakeApi):
+        def watchlist(self):
+            raise ApiUnreachable("ConnectError")
+
+    at = open_page(FailingWatchlist(), "Watchlist e alertas")
+    assert not at.exception
+    assert "Watchlist vazia." not in values(at.info)  # M7: a failed call must not read as an empty watchlist
+    assert "API indisponível (ConnectError)." in values(at.error)
+
+
+def test_health_page_shows_a_caption_when_the_log_is_empty():
+    class EmptyLog(FakeApi):
+        def health_log(self, **kwargs):
+            return []
+
+    at = open_page(EmptyLog(), "Saúde")
+    assert "Nenhuma transição registrada." in values(at.caption)
+
+
+def test_orders_detail_page_renders_the_chart_quality_section_and_event_log():
+    at = open_page(FakeApi(), "Ordens")
+    assert len(at.dataframe[0].value) == 3  # the recorded orders list, unfiltered
+    at.selectbox(key="orders-detail").select(DETAIL_ORDER_ID).run()
+    assert not at.exception
+    assert any("fonte fake_feed" in value for value in values(at.caption))  # the candlestick chart's caption
+    assert any("Minutos esperados: 201" in value for value in values(at.markdown))  # the quality section
+    assert "Nenhum recheck." in values(at.caption)  # the recorded fixture has no rechecks for this order
+    event_types = {row["Tipo"] for frame in at.dataframe for row in frame.value.to_dict(orient="records")
+                  if "Tipo" in row}
+    assert {"ORDER_CREATED", "FILLED", "TARGET1_HIT", "TARGET2_HIT", "DATA_QUALITY"} <= event_types
+
+
+def test_comparison_page_renders_group_tables_and_a_replay_pair_with_its_chart():
+    at = open_page(FakeApi(), "Comparação")
+    rows = [row for frame in at.dataframe for row in frame.value.to_dict(orient="records")]
+    assert any(row.get("Grupo") == "AUTO_STRATEGY" for row in rows)  # the "origin" comparison table (metrics_by_origin)
+    assert any(row.get("Diferença (R)") == "+0.00R" for row in rows)  # the original x replay table
+    assert "**Original** · v1" in values(at.markdown)  # the recorded chart for the first pair's original order
 
 
 def test_missing_configuration_names_the_variables_only(monkeypatch):

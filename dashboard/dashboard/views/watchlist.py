@@ -24,6 +24,8 @@ def render(client: ApiClient) -> None:
                 if added is not None:
                     st.success(f"{added['ticker']}: {added['status']}")
     entries = guarded(client.watchlist)
+    if entries is None:  # guarded already showed the error; no need for a second, misleading message
+        return
     if not entries:
         st.info("Watchlist vazia.")
         return
