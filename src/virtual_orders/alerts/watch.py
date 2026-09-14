@@ -113,6 +113,8 @@ def _ingest(engine: Engine, gateway: MarketDataGateway, price_source: str, ticke
             ingest_bars(engine, source, ticker, begin, end)
         except (SourceUnavailable, SourceDataError) as exc:
             failures[feed] = type(exc).__name__
+        except Exception as exc:  # noqa: BLE001 - D51 (T13): one ticker's unexpected error never aborts the others
+            failures[feed] = f"{ERROR_PREFIX}{type(exc).__name__}"
     return failures
 
 
