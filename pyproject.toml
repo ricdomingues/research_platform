@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14",
-    "fastapi>=0.115",
+    "fastapi>=0.141",
     "httpx>=0.28",
     "numpy>=2.0",
     "pandas-market-calendars>=4.4",
@@ -37,6 +37,14 @@ addopts = "-q"
 markers = [
     "integration: requires the Postgres test container (docker compose -f docker-compose.test.yml up -d)",
     "slow: long-running property search",
+]
+filterwarnings = [
+    # Third-party testclient internals, not our code: fastapi/testclient.py imports starlette's
+    # TestClient, which still calls `httpx` directly instead of the new `httpx2` shim.
+    "ignore:Using `httpx` with `starlette\\.testclient` is deprecated; install `httpx2` instead\\.:starlette.exceptions.StarletteDeprecationWarning",
+    # Third-party testclient internals, not our code: starlette/testclient.py still references the
+    # deprecated anyio.abc.BlockingPortal alias.
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated, use anyio\\.from_thread\\.BlockingPortal instead\\.:DeprecationWarning",
 ]
 
 [tool.ruff]
