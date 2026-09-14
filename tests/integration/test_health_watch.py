@@ -163,6 +163,8 @@ def test_unreachable_database_alerts_directly_once_without_leaking_the_host():
     assert key.startswith("HEALTH_DIRECT:UNHEALTHY:")
     assert document["causes"] == [{"code": "DATABASE_UNAVAILABLE", "severity": "UNHEALTHY"}]
     assert "127.0.0.1" not in str(document)
+    # I2/T12: the D24 envelope reaches the direct DB-down alert too, not just outbox-backed ones.
+    assert document["kind"] == "HEALTH" and document["alert_key"] == key and document["schema_version"] == 1
 
 
 def test_end_of_day_summary_is_enqueued_once_per_cycle_run(engine):

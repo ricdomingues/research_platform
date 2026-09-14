@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import Connection, Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from virtual_orders.alerts.outbox import AlertKind, enqueue_alert
+from virtual_orders.alerts.outbox import AlertKind, alert_envelope, enqueue_alert
 from virtual_orders.alerts.sink import AlertSink
 from virtual_orders.readmodels.health import HealthReport, HealthState, Severity, build_health_report
 from virtual_orders.storage.codec import to_document
@@ -104,9 +104,11 @@ class HealthWatcher:
                 return HealthObservation(report.state, False, False)
             if sink is None or not should_alert(previous_memory, current):
                 return HealthObservation(report.state, True, False)
+            alert_key = f"HEALTH_DIRECT:{current.state.value}:{now.isoformat()}"
             try:
-                sink.deliver(f"HEALTH_DIRECT:{current.state.value}:{now.isoformat()}",
-                             to_document(_document(report, previous_memory, now)))
+                sink.deliver(alert_key, to_document(alert_envelope(
+                    alert_key=alert_key, kind=AlertKind.HEALTH.value, document=_document(report, previous_memory, now)
+                )))
             except Exception as delivery_error:  # noqa: BLE001 - n8n is never in the critical path
                 logger.warning("direct health alert failed via %s: %s", sink.name, type(delivery_error).__name__)
                 return HealthObservation(report.state, True, False)

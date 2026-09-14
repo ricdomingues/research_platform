@@ -16,6 +16,7 @@ from sqlalchemy import Connection, Engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from virtual_orders.alerts.sink import AlertDeliveryFailed, AlertSink
+from virtual_orders.evaluator.clock import require_aware
 from virtual_orders.storage.codec import to_document
 from virtual_orders.storage.tables import alert_delivery_attempts, alert_event_marks, alert_outbox
 
@@ -53,6 +54,12 @@ class DeliveryReport:
     budget_exhausted: bool = False
 
 
+def alert_envelope(*, alert_key: str, kind: str, document: Mapping[str, Any]) -> dict[str, Any]:
+    """D24 + T12: every alert document carries `schema_version`/`alert_key`/`kind`, merged LAST so a caller's
+    document can never overwrite them (used by the outbox, the direct DB-down health alert and WORKER_LOCK_LOST)."""
+    return {**dict(document), "schema_version": ALERT_SCHEMA_VERSION, "alert_key": alert_key, "kind": kind}
+
+
 def enqueue_alert(
     conn: Connection,
     *,
@@ -63,8 +70,7 @@ def enqueue_alert(
     subject_ts: datetime | None = None,
 ) -> bool:
     """True when the alert is new. The same alert_key never produces a second row (idempotent across restarts)."""
-    body = to_document({"schema_version": ALERT_SCHEMA_VERSION, "alert_key": alert_key, "kind": kind.value,
-                        **dict(document)})
+    body = to_document(alert_envelope(alert_key=alert_key, kind=kind.value, document=document))
     stmt = (
         pg_insert(alert_outbox)
         .values(alert_key=alert_key, kind=kind.value, subject=subject, subject_ts=subject_ts, document=body)
@@ -251,7 +257,10 @@ def deliver_pending_alerts(
     """
     started = monotonic()
     with engine.begin() as conn:
-        instant: datetime = now if now is not None else conn.execute(text("SELECT clock_timestamp()")).scalar_one()
+        instant: datetime = (
+            require_aware(now, "now") if now is not None
+            else conn.execute(text("SELECT clock_timestamp()")).scalar_one()
+        )
         cutoff = instant - ALERT_EXPIRY
         expired = len(conn.execute(_EXPIRE, {"now": instant, "expiry_cutoff": cutoff}).all())
         rows = conn.execute(_CANDIDATES, {"expiry_cutoff": cutoff}).all()

@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
+import pytest
 from sqlalchemy import select, text
 
 from tests.integration.alert_support import RecordingSink
@@ -10,8 +11,11 @@ from tests.integration.support import CODE_VERSION, DAY, FakeBarSource, count, f
 from tests.support import et
 from virtual_orders.alerts import outbox
 from virtual_orders.alerts.outbox import (
+    AlertKind,
     DeliveryReport,
+    alert_envelope,
     deliver_pending_alerts,
+    enqueue_alert,
     enqueue_event_alerts,
     enqueue_incident_alerts,
     enqueue_order_event_alerts,
@@ -141,6 +145,26 @@ def test_enqueue_event_alerts_covers_orders_and_incidents(engine):
     assert enqueue_event_alerts(engine) == 0
 
 
+def test_alert_envelope_merges_reserved_keys_last_so_a_caller_cannot_override_them():
+    document = alert_envelope(alert_key="REAL_KEY", kind="REAL_KIND", document={
+        "schema_version": 999, "alert_key": "SPOOFED", "kind": "SPOOFED", "reason": "ok",
+    })
+    assert document == {"reason": "ok", "schema_version": 1, "alert_key": "REAL_KEY", "kind": "REAL_KIND"}
+
+
+def test_enqueue_alert_ignores_a_callers_attempt_to_override_the_envelope(engine):
+    with engine.begin() as conn:
+        created = enqueue_alert(conn, alert_key="TEST:1", kind=AlertKind.HEALTH, document={
+            "schema_version": 999, "alert_key": "SPOOFED", "kind": "SPOOFED", "state": "DEGRADED",
+        })
+    assert created
+    (row,) = outbox_rows(engine)
+    assert row.document["schema_version"] == 1
+    assert row.document["alert_key"] == "TEST:1"
+    assert row.document["kind"] == AlertKind.HEALTH.value
+    assert row.document["state"] == "DEGRADED"
+
+
 def test_pending_alerts_are_delivered_once_in_order_even_after_a_restart(engine):
     order_id = closed_order(engine)
     enqueue_order_event_alerts(engine)
@@ -155,6 +179,14 @@ def test_pending_alerts_are_delivered_once_in_order_even_after_a_restart(engine)
     assert deliver_pending_alerts(engine, restarted) == DeliveryReport(delivered=0, failed=0)
     assert restarted.sent == []
     assert [row.outcome for row in attempts(engine)] == ["DELIVERED"] * 3
+
+
+def test_deliver_pending_alerts_rejects_a_naive_now(engine):
+    closed_order(engine)
+    enqueue_order_event_alerts(engine)
+    naive = datetime(2025, 11, 25, 12, 0)  # noqa: DTZ001 - deliberately naive, to be rejected
+    with pytest.raises(ValueError, match="timezone-aware"):
+        deliver_pending_alerts(engine, RecordingSink(), now=naive)
 
 
 def test_a_failing_alert_backs_off_without_blocking_the_others(engine):
