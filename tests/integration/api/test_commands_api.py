@@ -67,6 +67,7 @@ def test_manual_order_with_the_provider_down_is_503_and_creates_nothing(api):
     response = api.client.post(f"/signals/{signal_id}/orders")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "ACTIONABILITY_UNVERIFIABLE"
+    assert "(fake)" not in response.text
     assert count(api.services.engine, "orders") == 0
 
 

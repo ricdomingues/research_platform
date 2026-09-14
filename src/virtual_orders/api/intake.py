@@ -46,7 +46,7 @@ def intake_signal(services: Services, raw_body: Mapping[str, Any]) -> SignalSubm
             status = services.ticker_check.check_ticker(ticker)
         except (SourceUnavailable, SourceDataError) as exc:
             raise ApiError(503, "TICKER_UNVERIFIABLE", detail={"ticker": ticker, "check": services.ticker_check.name,
-                                                               "message": str(exc)}) from exc
+                                                               "error": type(exc).__name__}) from exc
         if not status.tradable:
             raise SignalValidationError([f"TICKER_NOT_TRADABLE:{status.reason}"])
     return submit_signal(services.engine, body, config=services.fill_config, code_version=services.code_version,

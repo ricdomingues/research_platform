@@ -97,6 +97,7 @@ def test_ticker_check_unavailable_is_503_and_nothing_is_stored(api):
     response = post_json(api.client, "/signals", signal_body())
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "TICKER_UNVERIFIABLE"
+    assert "(fake)" not in response.text
     assert count(api.services.engine, "signals") == 0
 
 

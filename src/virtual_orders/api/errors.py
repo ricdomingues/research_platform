@@ -41,7 +41,14 @@ def to_api_error(exc: Exception, method: str) -> ApiError:
         })
     if isinstance(exc, ManualOrderError):
         status = 503 if exc.code == ACTIONABILITY_UNVERIFIABLE else 422
-        return ApiError(status, exc.code, exc.reason, exc.detail)
+        detail = exc.detail
+        if "ingest_error" in detail:
+            # The DB run detail (evaluator/manual.py) keeps the provider's full text; the HTTP boundary
+            # never does (D19 forbids exposing provider exception text in a response body).
+            raw = detail["ingest_error"]
+            code = "UNKNOWN_DATA_SOURCE" if raw.startswith("UNKNOWN_DATA_SOURCE:") else "SOURCE_UNAVAILABLE"
+            detail = {**detail, "ingest_error": code}
+        return ApiError(status, exc.code, exc.reason, detail)
     if isinstance(exc, SignalNotFound):
         return ApiError(404, "SIGNAL_NOT_FOUND")
     if isinstance(exc, OrderNotFound):
