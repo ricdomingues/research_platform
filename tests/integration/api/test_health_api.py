@@ -6,9 +6,7 @@ from uuid import UUID
 from alembic import command
 from fastapi.testclient import TestClient
 
-from tests.integration.api.conftest import API_KEY, post_json
-from tests.integration.conftest import alembic_config
-from tests.integration.support import CODE_VERSION, DAY, TICKER, signal_body
+from tests.integration.support import API_KEY, CODE_VERSION, DAY, TICKER, alembic_config, post_json, signal_body
 from tests.support import et
 from virtual_orders.api.app import create_app
 from virtual_orders.evaluator.commands import flag_order_review

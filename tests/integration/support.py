@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, func, select
 
 from core.domain.models import Bar, FillConfig
@@ -15,7 +19,14 @@ from tests.support import et
 from virtual_orders.evaluator.signals import SignalSubmission, submit_signal
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.marketdata.gateway import MarketDataGateway
-from virtual_orders.marketdata.sources import DataTier, DividendRecord, RawBar, SourceUnavailable, SplitRecord
+from virtual_orders.marketdata.sources import (
+    DataTier,
+    DividendRecord,
+    RawBar,
+    SourceUnavailable,
+    SplitRecord,
+    TickerStatus,
+)
 from virtual_orders.storage import tables
 
 TICKER = "AAPL"
@@ -188,3 +199,62 @@ class FakeReference:
         if self.failing:
             raise SourceUnavailable("yfinance unavailable (fake)")
         return self.daily.get((ticker, day))
+
+
+ROOT = Path(__file__).resolve().parents[2]
+API_KEY = "test-api-key"
+
+
+def alembic_config(url: str) -> Config:
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    return config
+
+
+class MutableClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def set(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class FakeTickerCheck:
+    name = "fake_assets"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.untradable: dict[str, str] = {}
+        self.failing = False
+
+    def check_ticker(self, ticker: str) -> TickerStatus:
+        self.calls.append(ticker)
+        if self.failing:
+            raise SourceUnavailable("assets unavailable (fake)")
+        reason = self.untradable.get(ticker)
+        return TickerStatus(ticker, reason is None, reason)
+
+
+def json_text(body: Any) -> str:
+    """JSON with Decimals written as exact number tokens (never via float)."""
+    numbers: dict[str, str] = {}
+
+    def default(value: Any) -> str:
+        if isinstance(value, Decimal):
+            marker = f"__decimal_{len(numbers)}__"
+            numbers[marker] = format(value, "f")
+            return marker
+        raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+    text = json.dumps(body, default=default)
+    for marker, number in numbers.items():
+        text = text.replace(f'"{marker}"', number)
+    return text
+
+
+def post_json(client: TestClient, path: str, body: Any):
+    return client.post(path, content=json_text(body), headers={"Content-Type": "application/json"})

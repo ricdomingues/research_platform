@@ -4,8 +4,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import text
 
-from tests.integration.api.conftest import post_json
-from tests.integration.support import CODE_VERSION, DAY, signal_body
+from tests.integration.support import CODE_VERSION, DAY, post_json, signal_body
 from tests.support import et
 from virtual_orders.ledger.runs import RunKind, RunStatus, finish_run, start_run
 from virtual_orders.marketdata.asof import acquire_data_as_of

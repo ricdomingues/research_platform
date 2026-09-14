@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+ROOT = SRC.parent
 
 PURE_PACKAGES = ["core/domain", "core/fills", "core/metrics"]
 PURE_MODULES = ["core/actionability.py", "core/dataquality.py"]
@@ -236,3 +237,17 @@ def test_boundary_scan_covers_the_worker_and_alert_packages() -> None:
     assert "virtual_orders.notify.n8n" in _imported_modules(SRC / COMPOSITION_ROOT)
     assert "virtual_orders.bootstrap" in _imported_modules(SRC / WORKER_ENTRYPOINT)
     assert "virtual_orders/api/routes/watchlist.py" in {_rel(p) for p in _api_files()}
+
+
+def _root_test_files() -> list[Path]:
+    return sorted((ROOT / "tests").rglob("*.py"))
+
+
+def test_no_module_imports_a_conftest() -> None:
+    # Plan 3B close-out entry 20: a conftest imported as a plain module can be registered out of order when test
+    # files from different directories share one pytest call. Shared helpers live in tests/integration/support.py.
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(name for name in _imported_modules(path) if name.endswith(".conftest"))
+        for path in _root_test_files()
+    }
+    assert {name: modules for name, modules in offenders.items() if modules} == {}

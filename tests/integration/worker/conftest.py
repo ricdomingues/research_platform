@@ -9,7 +9,6 @@ import pytest
 
 from core.domain.models import FillConfig
 from tests.integration.alert_support import RecordingSink
-from tests.integration.api.conftest import FakeTickerCheck, MutableClock
 from tests.integration.support import (
     CODE_VERSION,
     DAY,
@@ -18,6 +17,8 @@ from tests.integration.support import (
     FakeDividends,
     FakeReference,
     FakeSplits,
+    FakeTickerCheck,
+    MutableClock,
     feeds,
 )
 from tests.support import et

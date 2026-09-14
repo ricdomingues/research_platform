@@ -6,7 +6,7 @@ from alembic import command
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from tests.integration.conftest import alembic_config
+from tests.integration.support import alembic_config
 from virtual_orders.storage import tables
 from virtual_orders.storage.tables import APPEND_ONLY_TABLES
 
