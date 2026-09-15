@@ -338,6 +338,7 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "virtual_orders/api/tickers.py", "virtual_orders/api/routes/market.py",
         "virtual_orders/api/routes/portfolio.py", "virtual_orders/api/routes/observability.py",
     } <= api
+    assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
 
 
 OBSERVATION_MODULES = (
@@ -360,4 +361,22 @@ def test_evaluation_never_reads_the_observation_report() -> None:
     offenders = {_rel(path): _offending(path, OBSERVATION_MODULES) for path in _evaluation_files()}
     assert {name: modules for name, modules in offenders.items() if modules} == {}
     assert "virtual_orders/evaluator/cycle.py" in offenders and "core/fills/v1/engine.py" in offenders
-    assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
+
+
+OBSERVATION_READMODEL_FORBIDDEN = (
+    "virtual_orders.ledger.writes", "virtual_orders.ledger.runs", "virtual_orders.marketdata.ingest",
+    "virtual_orders.evaluator.manual",
+)
+
+
+def _observation_readmodel_files() -> list[Path]:
+    return sorted((SRC / "virtual_orders/readmodels").glob("observation*.py"))
+
+
+def test_observation_read_models_never_import_the_evaluation_write_path() -> None:
+    # Plan 4 fix round 1 (reverse boundary): the report only reads facts evaluation already wrote; it never
+    # touches the write side (ledger writes/runs, market data ingest) or evaluator internals (manual).
+    offenders = {_rel(path): _offending(path, OBSERVATION_READMODEL_FORBIDDEN)
+                 for path in _observation_readmodel_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+    assert len(_observation_readmodel_files()) >= 4

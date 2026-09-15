@@ -24,9 +24,11 @@ from virtual_orders.analytics.observation import (
     ratio,
     seconds_by_state,
 )
-from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE
 from virtual_orders.readmodels.observation_window import ObservationWindow
 
+# Mirrors virtual_orders.evaluator.manual.ACTIONABILITY_UNVERIFIABLE (same string value, pinned by a test):
+# the observation read models never import the evaluation package.
+ACTIONABILITY_UNVERIFIABLE = "ACTIONABILITY_UNVERIFIABLE"
 MAX_LISTED_FEEDS = 50
 # D67: where each run kind records its provider failures (feed key -> stored message).
 FAILURE_MAPS: dict[str, tuple[str, ...]] = {

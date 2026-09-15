@@ -16,6 +16,7 @@ from tests.support import et
 from virtual_orders.evaluator.quality import run_end_of_day
 from virtual_orders.ledger.runs import RunKind, RunStatus
 from virtual_orders.readmodels.observation_operations import (
+    ACTIONABILITY_UNVERIFIABLE,
     RUN_KIND_ORDER,
     ActionabilitySection,
     AlertDeliverySection,
@@ -251,3 +252,11 @@ def test_health_transitions_and_time_in_each_state(engine):
     )
     assert (early.transitions, early.log_rows, early.seconds_by_state, early.state_at_end) == (
         1, 1, {"DEGRADED": 900, "HEALTHY": 36000}, "DEGRADED")
+
+
+def test_the_local_actionability_unverifiable_constant_mirrors_evaluator_manual() -> None:
+    # Plan 4 fix round 1: observation_operations no longer imports virtual_orders.evaluator.manual (reverse
+    # boundary); this pins its local copy of the code string to the source of truth. Tests are not scanned.
+    from virtual_orders.evaluator.manual import ACTIONABILITY_UNVERIFIABLE as EVALUATOR_ACTIONABILITY_UNVERIFIABLE
+
+    assert ACTIONABILITY_UNVERIFIABLE == EVALUATOR_ACTIONABILITY_UNVERIFIABLE

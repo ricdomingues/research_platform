@@ -30,6 +30,7 @@ from virtual_orders.readmodels.observation import (
     build_observation_report,
     build_observation_summary,
     observation_snapshot,
+    require_snapshot,
 )
 from virtual_orders.readmodels.observation_window import summary_sessions
 from virtual_orders.storage import tables
@@ -119,3 +120,19 @@ def test_the_summary_aggregates_the_sessions_of_the_range(engine):
     )
     assert summary.pressure.unavailable_reasons == {"NO_BARS": 1}
     assert summary.definitions == DEFINITIONS
+
+
+def test_build_observation_summary_rejects_an_empty_window_sequence(engine):
+    with observation_snapshot(engine) as conn, pytest.raises(
+        ValueError, match="a summary needs at least one session window"
+    ):
+        build_observation_summary(conn, [])
+
+
+def test_require_snapshot_rejects_a_repeatable_read_connection_that_is_not_read_only(engine):
+    with engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn, conn.begin():
+        isolation = conn.execute(text("SHOW transaction_isolation")).scalar_one()
+        read_only = conn.execute(text("SHOW transaction_read_only")).scalar_one()
+        assert (isolation, read_only) == ("repeatable read", "off")  # REPEATABLE READ alone is not enough (D61)
+        with pytest.raises(ValueError, match="REPEATABLE READ"):
+            require_snapshot(conn)
