@@ -84,6 +84,25 @@ def test_exit_codes_carry_codes_and_types_only(engine, database_url, monkeypatch
     assert usage.value.code == 2
 
 
+def test_engine_factory_failure_is_reported_as_invalid_database_url():
+    # A malformed URL fails inside create_engine (here: the engine_factory), never inside the try/except that
+    # follows it. Only a fixed code reaches stdout/stderr; the URL and any password-like marker never do.
+    url = "postgresql+psycopg://u:hunter2@db.internal/x"
+
+    def exploding_engine_factory(given_url):
+        raise ValueError(f"could not parse SQLAlchemy URL from string '{given_url}'")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(
+        ["report", "--day", DAY], environ={"DATABASE_URL": url}, engine_factory=exploding_engine_factory,
+        out=out, err=err,
+    )
+    assert code == 2
+    assert json.loads(err.getvalue())["errors"] == ["INVALID:DATABASE_URL"]
+    for marker in ("hunter2", url):
+        assert marker not in out.getvalue() and marker not in err.getvalue()
+
+
 def raising(error):
     def build(*args, **kwargs):
         raise error

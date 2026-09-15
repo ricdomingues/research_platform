@@ -392,10 +392,7 @@ def _observation_cli_files() -> list[Path]:
 def test_the_observation_cli_never_imports_adapters_the_composition_root_or_the_http_layer() -> None:
     # Not parametrized: an empty parameter set before the package exists would be reported as a skip.
     files = _observation_cli_files()
-    forbidden = PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + (
-        "virtual_orders.api", "virtual_orders.bootstrap", "virtual_orders.config", "virtual_orders.worker",
-        "fastapi", "starlette", "uvicorn",
-    )
+    forbidden = PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + APPLICATION_LAYER
     assert {_rel(path) for path in files} >= {
         "virtual_orders/observation/__init__.py", "virtual_orders/observation/__main__.py",
         "virtual_orders/observation/render.py",
