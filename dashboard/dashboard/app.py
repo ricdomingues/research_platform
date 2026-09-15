@@ -9,7 +9,7 @@ from typing import cast
 import streamlit as st
 
 from dashboard.client import ApiClient, DashboardConfigError
-from dashboard.views import comparison, health, market, orders, overview, portfolio, signals, watchlist
+from dashboard.views import comparison, health, market, observation, orders, overview, portfolio, signals, watchlist
 
 CLIENT_KEY = "api_client"
 PAGES: dict[str, Callable[[ApiClient], None]] = {
@@ -21,6 +21,7 @@ PAGES: dict[str, Callable[[ApiClient], None]] = {
     "Watchlist e alertas": watchlist.render,
     "Mercado": market.render,
     "Portfólio": portfolio.render,
+    "Observação": observation.render,
 }
 
 

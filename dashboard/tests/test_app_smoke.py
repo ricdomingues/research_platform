@@ -26,6 +26,8 @@ ORDER_CHART = _load("order_chart")
 MARKET_BARS = _load("market_bars")
 METRICS_BY_ORIGIN = _load("metrics_by_origin")
 METRICS_GENERIC = _load("metrics")
+OBSERVATION_REPORT = _load("observation_report")
+OBSERVATION_SUMMARY = _load("observation_summary")
 DETAIL_ORDER_ID = str(ORDER_DETAIL["order"]["order_id"])  # the only order id with recorded detail/chart fixtures
 SUMMARY = {
     "trades": 12, "win_rate": Decimal("0.5833"), "avg_r": Decimal("0.42"), "expectancy_r": Decimal("0.42"),
@@ -53,6 +55,7 @@ class FakeApi:
     def __init__(self) -> None:
         self.manual_calls: list[str] = []
         self.manual_error: Exception | None = None
+        self.observation_error: Exception | None = None
 
     def metrics(self, **kwargs):
         group_by = kwargs.get("group_by")
@@ -117,6 +120,14 @@ class FakeApi:
 
     def real_portfolio(self):
         return {"kind": "REAL", "available": False, "reason": "PHASE_0_PENDING", "source": None, "positions": []}
+
+    def observation_report(self, day):
+        if self.observation_error is not None:
+            raise self.observation_error
+        return OBSERVATION_REPORT
+
+    def observation_summary(self, start, end):
+        return OBSERVATION_SUMMARY
 
 
 def open_page(fake, page):
@@ -247,3 +258,27 @@ def test_missing_configuration_names_the_variables_only(monkeypatch):
     at.run()
     assert values(at.error) == ["Configuração do dashboard incompleta: MISSING:DASHBOARD_API_URL"]
     assert "secret-value" not in str(values(at.error))
+
+
+def test_observation_page_labels_the_pressure_estimate_and_shows_the_summary():
+    at = open_page(FakeApi(), "Observação")
+    assert at.title[0].value == "Observação"
+    assert {metric.label for metric in at.metric} >= {
+        "Falhas de provider", "Minutos ausentes", "503 de actionability", "Linhas de recheck", "Falhas de entrega",
+        "Reinícios do worker", "Transições de saúde", "Trades fechados", "R somado", "Latência mediana"}
+    captions = values(at.caption)
+    assert "Método: OHLCV_PRESSURE_ESTIMATE_V1" in captions
+    assert OBSERVATION_REPORT["pressure"]["disclaimer"] in captions
+    assert OBSERVATION_REPORT["pressure"]["association_note"] in captions
+    assert "Janela completa" in captions
+    assert "Resumo: 2 pregão(ões)" in values(at.subheader)
+
+
+def test_observation_page_shows_an_invalid_day_without_a_traceback():
+    fake = FakeApi()
+    fake.observation_error = ApiRequestFailed(422, "OBSERVATION_REQUEST_INVALID",
+                                              detail={"errors": ["NOT_A_SESSION:2025-11-29"]})
+    at = open_page(fake, "Observação")
+    assert not at.exception
+    assert values(at.error) == ["Pedido de observação inválido. Códigos: NOT_A_SESSION:2025-11-29."]
+    assert "Resumo: 2 pregão(ões)" in values(at.subheader)  # the summary call still succeeds on its own
