@@ -56,3 +56,19 @@ Abra `http://127.0.0.1:8501`. Em VPS, só por túnel SSH: `ssh -L 8501:127.0.0.1
 - `OPENING_MISSING`: não rode a abertura depois do horário. Dividendos com ex-date do dia sem validação ficam para revisão; confira as ordens do ticker e registre `NEEDS_REVIEW` manual se preciso.
 - `END_OF_DAY_MISSING`: não há comando para rodar o fim de dia de um pregão passado (D4/D12(b)). A validade é finalizada no fim de dia seguinte, e a qualidade do pregão entra em `QUALITY_NOT_EVALUATED` e é coberta pelo `DATA_QUALITY_RECHECK` (D22, D52). Se o feed continuar falhando por 5 pregões, a pendência termina em `PROVIDER_FAILURE_FINAL` com `NEEDS_REVIEW` `DATA_QUALITY_UNVERIFIED`.
 - A causa some de `/health` quando o próximo job daquele tipo roda para o pregão seguinte e o lookback de 14 dias passa; ela nunca é apagada à mão.
+
+## Observação diária (Plano 4)
+
+Relatório só leitura de um pregão (as-of o relógio do banco, sem chamada a provider e sem escrita):
+
+```bash
+docker compose exec api python -m virtual_orders.observation report --day 2026-09-15            # Markdown
+docker compose exec api python -m virtual_orders.observation report --day 2026-09-15 --format json
+docker compose exec api python -m virtual_orders.observation summary --from 2026-09-15 --to 2026-09-26
+```
+
+- Saídas: `0` ok; `1` erro interno (`INTERNAL_ERROR`, ou `DATABASE_ERROR` para erro de SQL que não é de conexão; só o tipo); `2` uso inválido ou `DATABASE_URL` ausente; `3` dia sem pregão, no futuro ou intervalo inválido (`OBSERVATION_REQUEST_INVALID`); `4` banco inacessível (`OperationalError`, `InterfaceError` ou timeout do pool).
+- Pela API/dashboard: `GET /observation/report?day=…` e `GET /observation/summary?from=…&to=…`; página "Observação". Cada pedido lê um único snapshot do banco.
+- Com `N8N_WEBHOOK_URL`, o fim de dia enfileira um alerta `OBSERVATION_DAILY:<pregão>` só com contagens (fotografia do primeiro fim de dia que roda; `complete: false`). O primeiro enfileiramento vence: se ele falhar (log `observation alert failed: <Tipo>`) e o pregão se resolver no fim de dia seguinte, não há alerta para esse pregão — use a CLI. Para o dia inteiro, rode o relatório depois da meia-noite ET.
+- Reinícios do worker vêm de `worker_sessions`. "Sessão aberta no fim" = sem linha de parada: o worker está rodando **ou** morreu sem passar pelo `finally`; só o próximo início distingue. "Fins sem parada" (SIGKILL, OOM, queda do host) aparecem no relatório do pregão em que o worker **voltou** a iniciar — confira `docker compose ps`/`docker inspect` do contêiner.
+- A pressão × resultado é **estimativa descritiva** sobre poucos trades: não é evidência causal nem sinal de trading.

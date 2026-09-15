@@ -380,3 +380,24 @@ def test_observation_read_models_never_import_the_evaluation_write_path() -> Non
                  for path in _observation_readmodel_files()}
     assert {name: modules for name, modules in offenders.items() if modules} == {}
     assert len(_observation_readmodel_files()) >= 4
+
+
+OBSERVATION_CLI = "virtual_orders/observation"
+
+
+def _observation_cli_files() -> list[Path]:
+    return sorted((SRC / OBSERVATION_CLI).rglob("*.py"))
+
+
+def test_the_observation_cli_never_imports_adapters_the_composition_root_or_the_http_layer() -> None:
+    # Not parametrized: an empty parameter set before the package exists would be reported as a skip.
+    files = _observation_cli_files()
+    forbidden = PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + (
+        "virtual_orders.api", "virtual_orders.bootstrap", "virtual_orders.config", "virtual_orders.worker",
+        "fastapi", "starlette", "uvicorn",
+    )
+    assert {_rel(path) for path in files} >= {
+        "virtual_orders/observation/__init__.py", "virtual_orders/observation/__main__.py",
+        "virtual_orders/observation/render.py",
+    }
+    assert {_rel(path): _offending(path, forbidden) for path in files} == {_rel(path): [] for path in files}
