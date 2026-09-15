@@ -1,10 +1,13 @@
+import logging
 from collections import Counter
 from dataclasses import replace
+from datetime import date
 
 from sqlalchemy import select
 
 from tests.integration.support import DAY, count, flat_raw, scenario_bars, submit_default
 from tests.support import et
+from virtual_orders.alerts.observation import OBSERVATION_ALERT_FIELDS, enqueue_observation_alert
 from virtual_orders.alerts.watchlist import add_ticker
 from virtual_orders.evaluator.commands import flag_order_review
 from virtual_orders.ledger import errors
@@ -174,3 +177,56 @@ def test_health_watch_and_alert_delivery(worker):
     assert worker.sink.sent[1][0].startswith("INTEGRITY_INCIDENT:")  # enqueued by the delivery job itself
     disabled = WorkerJobs(replace(worker.services, alert_sink=None))
     assert disabled.deliver_alerts() == JobResult("deliver_alerts", False, "WEBHOOK_DISABLED")
+
+
+def observation_documents(engine):
+    with engine.connect() as conn:
+        return list(conn.execute(select(tables.alert_outbox.c.document)
+                                 .where(tables.alert_outbox.c.kind == "OBSERVATION_DAILY")).scalars())
+
+
+def a_closed_trade_then_end_of_day(worker, jobs):
+    submit_default(worker.services.engine)
+    worker.bars.load(scenario_bars())
+    for hm in ("10:30", "11:30", "13:00"):
+        worker.clock.set(et(DAY, hm))
+        assert jobs.live_cycle() == JobResult("live_cycle", True, "COMPLETED")
+    worker.clock.set(et(DAY, "16:30"))
+    return jobs.end_of_day()
+
+
+def test_end_of_day_enqueues_one_observation_alert_per_session_with_counts_only(worker):
+    engine = worker.services.engine
+    assert a_closed_trade_then_end_of_day(worker, WorkerJobs(worker.services)) == JobResult("end_of_day", True,
+                                                                                            "COMPLETED")
+
+    (document,) = observation_documents(engine)
+    assert set(document) == set(OBSERVATION_ALERT_FIELDS) | {"schema_version", "alert_key", "kind"}
+    assert (document["kind"], document["alert_key"], document["session_day"]) == (
+        "OBSERVATION_DAILY", "OBSERVATION_DAILY:2025-11-25", DAY)
+    counts = (document["trades_closed"], document["fills"], document["sum_r"], document["median_bar_latency_seconds"])
+    assert counts == (1, 1, "1.75", 3900)
+    assert all(not isinstance(value, list) for value in document.values())  # no ticker, feed or order lists
+    assert "AAPL" not in str(document) and "fake_feed" not in str(document)
+    assert enqueue_observation_alert(engine, session_day=date(2025, 11, 25)) is False  # one per session
+    assert len(observation_documents(engine)) == 1
+
+
+def test_no_observation_alert_without_a_webhook(worker):
+    disabled = WorkerJobs(replace(worker.services, alert_sink=None))
+    assert a_closed_trade_then_end_of_day(worker, disabled) == JobResult("end_of_day", True, "COMPLETED")
+    assert observation_documents(worker.services.engine) == []
+
+
+def test_a_failing_observation_alert_never_fails_the_end_of_day_job(worker, monkeypatch, caplog):
+    def exploding(*args, **kwargs):
+        raise RuntimeError("observation-secret-text")
+
+    monkeypatch.setattr(jobs_module, "enqueue_observation_alert", exploding)
+    with caplog.at_level(logging.ERROR, logger="virtual_orders.worker"):
+        result = a_closed_trade_then_end_of_day(worker, WorkerJobs(worker.services))
+    assert result == JobResult("end_of_day", True, "COMPLETED")
+    assert "observation alert failed: RuntimeError" in caplog.text
+    assert "observation-secret-text" not in caplog.text  # D70: the type only, never the message or a traceback
+    assert any(key.startswith("END_OF_DAY_SUMMARY:2025-11-25:") for key in outbox_keys(worker.services.engine))
+    assert observation_documents(worker.services.engine) == []
