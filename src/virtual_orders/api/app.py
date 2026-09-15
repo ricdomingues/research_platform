@@ -14,6 +14,7 @@ from virtual_orders.api.routes import (
     market,
     metrics,
     observability,
+    observation,
     orders,
     portfolio,
     replay,
@@ -44,4 +45,5 @@ def create_app(services: Services) -> FastAPI:
     app.include_router(market.router)
     app.include_router(portfolio.router)
     app.include_router(observability.router)
+    app.include_router(observation.router)
     return app
