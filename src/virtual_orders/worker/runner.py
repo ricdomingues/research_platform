@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import signal
+import socket
 import threading
 from collections.abc import Callable
 from types import FrameType
 from typing import Any, Protocol, cast
+from uuid import UUID, uuid4
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import Connection, Engine, text
@@ -15,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from virtual_orders.alerts.outbox import alert_envelope
 from virtual_orders.evaluator.clock import require_aware
+from virtual_orders.ledger.worker_sessions import StopReason, host_fingerprint, record_worker_start, record_worker_stop
 from virtual_orders.services import Services
 from virtual_orders.storage.database import WORKER_LOCK_KEY
 from virtual_orders.worker.jobs import JobResult, WorkerJobs
@@ -31,6 +34,7 @@ EXIT_OK = 0
 EXIT_LOCKED = 2
 EXIT_LOCK_LOST = 3
 EXIT_DATABASE_UNAVAILABLE = 4  # D49 (M4): the database was unreachable when the worker tried to take its lock
+EXIT_UNCAUGHT = 1  # D62: the interpreter's status for an uncaught exception; recorded, never returned
 
 # pg_try_advisory_lock(bigint) stores the high 32 bits in classid, the low 32 bits in objid and objsubid = 1.
 _LOCK_HELD = text(
@@ -117,14 +121,44 @@ def _alert_lock_lost(services: Services) -> None:
         logger.warning("worker lock alert failed via %s: %s", sink.name, type(exc).__name__)
 
 
+def _hostname() -> str | None:
+    try:
+        return socket.gethostname()
+    except OSError:
+        return None
+
+
+def _start_session(services: Services, hostname: Callable[[], str | None]) -> UUID | None:
+    """D62: best effort. A failed write is logged by type only and never stops the worker."""
+    session_id = uuid4()
+    try:
+        record_worker_start(services.engine, session_id=session_id, code_version=services.code_version,
+                            fingerprint=host_fingerprint(hostname()))
+    except Exception as exc:  # noqa: BLE001 - observation data is never in the critical path
+        logger.warning("worker session start not recorded: %s", type(exc).__name__)
+        return None
+    return session_id
+
+
+def _stop_session(services: Services, session_id: UUID, exit_code: int, reason: StopReason) -> None:
+    try:
+        record_worker_stop(services.engine, session_id=session_id, exit_code=exit_code, reason=reason)
+    except Exception as exc:  # noqa: BLE001 - the lock is still released and the services still closed
+        logger.warning("worker session stop not recorded: %s", type(exc).__name__)
+
+
 def run_worker(
     services: Services,
     *,
     scheduler_factory: Callable[[], Scheduler] = blocking_scheduler,
     install_signal_handlers: bool = True,
+    hostname: Callable[[], str | None] = _hostname,
 ) -> int:
     lock: Connection | None = None
     lost = False
+    signalled = False
+    session: UUID | None = None
+    ended: tuple[int, StopReason] | None = None
     guard = ShutdownGuard()  # T16 + D49: a second SIGTERM/SIGINT, or a signal after lock loss, never shuts down twice
     try:
         try:
@@ -136,6 +170,7 @@ def run_worker(
             logger.error("another worker holds the worker lock; exiting")
             return EXIT_LOCKED
         held: Connection = lock
+        session = _start_session(services, hostname)  # D62: only a process holding the lock is a session
         jobs = WorkerJobs(services)
         schedule = build_schedule(services.eval_interval_minutes)
         scheduler = scheduler_factory()
@@ -157,17 +192,27 @@ def run_worker(
                               max_instances=1, coalesce=True, misfire_grace_time=MISFIRE_GRACE_SECONDS)
         if install_signal_handlers:
             def stop(signum: int, frame: FrameType | None) -> None:
+                nonlocal signalled
                 if not guard.claim():
                     logger.info("signal %s received again; already shutting down", signum)
                     return  # a second signal, or one racing the lock-loss shutdown: never shut down twice
+                signalled = True
                 logger.info("signal %s received; waiting for running jobs and shutting down", signum)
                 scheduler.shutdown(wait=True)
 
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGINT, stop)
         scheduler.start()
-        return EXIT_LOCK_LOST if lost else EXIT_OK
+        code = EXIT_LOCK_LOST if lost else EXIT_OK
+        reason = StopReason.LOCK_LOST if lost else StopReason.SIGNAL if signalled else StopReason.SCHEDULER_STOPPED
+        ended = (code, reason)
+        return code
+    except BaseException:
+        ended = (EXIT_UNCAUGHT, StopReason.UNCAUGHT_EXCEPTION)  # also KeyboardInterrupt/SystemExit after the lock
+        raise
     finally:
+        if session is not None and ended is not None:
+            _stop_session(services, session, *ended)  # before the lock is released: the next start sorts after it
         if lock is not None:
             try:
                 release_worker_lock(lock)
