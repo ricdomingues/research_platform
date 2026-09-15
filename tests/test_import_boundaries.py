@@ -49,6 +49,7 @@ WORKER_ENTRYPOINT = "virtual_orders/worker/__main__.py"
 PLATFORM_PURE_MODULES = [
     "virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py",
     "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+    "virtual_orders/analytics/observation.py",
 ]
 PLATFORM_INFRASTRUCTURE = (
     "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
