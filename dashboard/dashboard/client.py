@@ -160,6 +160,12 @@ class ApiClient:
     def quality_overview(self) -> JsonObject:
         return self._request("GET", "/quality/overview")
 
+    def observation_report(self, day: date) -> JsonObject:
+        return self._request("GET", "/observation/report", params={"day": day})
+
+    def observation_summary(self, start: date, end: date) -> JsonObject:
+        return self._request("GET", "/observation/summary", params={"from": start, "to": end})
+
     def metrics(
         self, *, group_by: str | None = None, include_needs_review: bool = False, replay: bool = False,
         start: datetime | None = None, end: datetime | None = None,

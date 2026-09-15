@@ -123,3 +123,19 @@ def test_configuration_comes_from_the_environment_and_never_shows_the_key():
     api = ApiClient.from_environment({"DASHBOARD_API_URL": "http://api:8000", "API_KEY": "secret-key"})
     assert "secret-key" not in repr(api) and "api:8000" in repr(api)
     api.close()
+
+
+def test_observation_routes_send_iso_dates():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"session_day": "2025-11-25"})
+
+    api = client_for(handler)
+    assert api.observation_report(date(2025, 11, 25)) == {"session_day": "2025-11-25"}
+    api.observation_summary(date(2025, 11, 12), date(2025, 11, 25))
+    assert (seen[0].url.path, dict(seen[0].url.params)) == ("/observation/report", {"day": "2025-11-25"})
+    assert (seen[1].url.path, dict(seen[1].url.params)) == (
+        "/observation/summary", {"from": "2025-11-12", "to": "2025-11-25"})
+    assert seen[0].headers["X-API-Key"] == "secret-key"

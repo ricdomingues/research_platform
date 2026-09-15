@@ -1,0 +1,104 @@
+{
+  "as_of": "2000-01-01T00:00:00+00:00",
+  "days": [
+    {
+      "actionability_unverifiable": 0,
+      "alert_failures": 0,
+      "alerts_expired": 0,
+      "complete": true,
+      "expected_bars": 371,
+      "fills": 2,
+      "health_transitions": 2,
+      "missing_bars": 0,
+      "provider_failures": 0,
+      "rechecks": 0,
+      "session_day": "2025-11-25",
+      "sum_r": "3.5",
+      "trades": 2,
+      "unclean_worker_ends": 0,
+      "worker_restarts": 0
+    },
+    {
+      "actionability_unverifiable": 0,
+      "alert_failures": 0,
+      "alerts_expired": 0,
+      "complete": true,
+      "expected_bars": 390,
+      "fills": 0,
+      "health_transitions": 0,
+      "missing_bars": 35,
+      "provider_failures": 0,
+      "rechecks": 0,
+      "session_day": "2025-11-26",
+      "sum_r": "0",
+      "trades": 0,
+      "unclean_worker_ends": 0,
+      "worker_restarts": 0
+    }
+  ],
+  "definitions": {
+    "actionability": "Manual-order actionability checks clicked inside the window; unverifiable are the HTTP 503 ACTIONABILITY_UNVERIFIABLE answers, split into provider failure, missing minutes and policy contract violation.",
+    "alerts": "Alerts created and delivery attempts made inside the window (database clock): outcomes, failure types (HTTP status or exception type) and alerts created in the window still undelivered at its end.",
+    "data_quality": "Missing bars from the DATA_QUALITY:<session> events of non-replay orders (order-minutes), DATA_GAP events that start inside the session, and not_evaluated reasons of the latest completed END_OF_DAY run of the session.",
+    "health": "health_state_log rows inside the window: transitions are state changes (a row whose state differs from the previous row's, the first compared with the state in force at the window start); log_rows counts every row, including cause-code-only changes. Also states entered, cause codes and seconds spent in each state.",
+    "latency": "Per FILLED event in the window: seconds from the signal created_at to the fill bar start and to the moment the fill was recorded; nearest-rank median and p90, never interpolated. Orders created in the window without a fill as of the report are counted by outcome (EXPIRED, INVALIDATED, CANCELED or NOT_FILLED_YET); this is a snapshot as of the report, so created is not filled plus unfilled in general.",
+    "pressure": "An OHLCV pressure estimate recomputed at report time from the last 30 stored bars strictly before each closed trade's signal minute, across sessions and as of the report (each trade records window_start, window_end and spans_sessions), grouped by alignment with the trade direction and CMF strength against the trade R. CMF 0.05/0.15 and 30 bars are labelled conventions. A bucket mean needs at least 5 trades; n is shown beside it. It is an estimate, not order flow, descriptive only, never stored and never used by any evaluation.",
+    "provider_failures": "Provider failures recorded in run details (LIVE/WATCHLIST ingest_failures, OPENING source_failures, END_OF_DAY unavailable, QUALITY_RECHECK ingest_failures and unavailable, ACTIONABILITY ingest_error), counted per run and feed as fixed codes; messages never leave the database. Failed runs are counted by exception type name, or UNKNOWN. consecutive_live_max is the longest run of consecutive completed LIVE cycles inside this window with the same feed failing: it restarts at the window boundary, skips failed runs and is not the /health rule.",
+    "rechecks": "DATA_QUALITY_RECHECK runs whose market instant falls in the window and the rows they recorded, plus every recheck row about this session recorded up to the report (about_this_session). Those rows also count in the rows of the window whose run recorded them, so the two are never summed. not_evaluated excludes the ALREADY_RECHECKED and ALREADY_EVALUATED skips, which are counted in skipped.",
+    "trades": "Non-replay virtual orders: created, filled (FILLED bar in the window), closed (closing event recorded as of the report). Statistics exclude needs_review orders (spec 5.4); MFE/MAE come from the projection (spec D3). The MFE/MAE median is the middle value, or the mean of the two middle values for an even count (latency uses nearest-rank instead). Replay orders are only counted in replay_closed.",
+    "window": "From 00:00 ET of the day after the previous NYSE session to 00:00 ET of the day after the session. Evaluation facts belong to the window by their market instant (a still-running run without one falls back to its database start time); health log, alert and worker rows by the database clock. Every row is read as of the database clock at the request, and the whole report is read in one read-only REPEATABLE READ snapshot taken after that instant; complete = as_of is past the window end.",
+    "worker": "worker_sessions rows: starts, restarts (a start after any earlier session), stop reasons and exit codes. A session without a stop row is open: running, or ended without one. open_session_at_end = the last session started by the window end has no stop row by then. An unclean end (no stop row before the next start) is only detectable at the next start and belongs to the window of that start; a still-open session with no later start is open, never a restart. A LOCK_LOST stop is always clean, even when recorded after the successor's start."
+  },
+  "excluded_needs_review": 0,
+  "first_day": "2025-11-25",
+  "last_day": "2025-11-26",
+  "latency": {
+    "count": 2,
+    "max_seconds": 3900,
+    "median_seconds": 3900,
+    "p90_seconds": 3900
+  },
+  "pressure": {
+    "association_note": "Descriptive counts over a small paper sample: not causal evidence, not a trading signal, and never used by any evaluation. A bucket mean is shown only with at least 5 trades; n is always shown beside it.",
+    "buckets": [
+      {
+        "alignment": "UNAVAILABLE",
+        "mean_r": null,
+        "strength": null,
+        "sum_r": "3.5",
+        "trades": 2,
+        "wins": 2
+      }
+    ],
+    "cmf_threshold": "0.05",
+    "disclaimer": "Estimate derived from 1-minute OHLCV bars; it is not order-flow or trade-side data.",
+    "estimate": true,
+    "method": "OHLCV_PRESSURE_ESTIMATE_V1",
+    "min_trades_for_mean": 5,
+    "strong_cmf": "0.15",
+    "unavailable_reasons": {
+      "NO_BARS": 2
+    },
+    "window_bars": 30
+  },
+  "recorded_latency": {
+    "count": 2,
+    "max_seconds": 0,
+    "median_seconds": 0,
+    "p90_seconds": 0
+  },
+  "report_version": "OBSERVATION_REPORT_V1",
+  "sessions": 2,
+  "trades": {
+    "losses": 0,
+    "mean_mae_r": "-0.125",
+    "mean_mfe_r": "2.375",
+    "mean_r": "1.75",
+    "median_mae_r": "-0.125",
+    "median_mfe_r": "2.375",
+    "sum_r": "3.5",
+    "trades": 2,
+    "win_rate": "1",
+    "wins": 2
+  }
+}

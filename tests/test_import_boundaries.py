@@ -324,7 +324,7 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "dashboard/tests/test_api_contract.py",
     } <= dashboard
     assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
-    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 17  # D57
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 19  # D57 + Plan 4 D72
     assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
     neutral = {_rel(p) for p in _neutral_files()}
     assert {

@@ -2,6 +2,7 @@
 (tests/integration/api/test_dashboard_contract.py in the engine project). No server, no network."""
 
 import json
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -116,3 +117,12 @@ def test_market_portfolio_watchlist_comparison_and_health_from_recorded_response
     assert [row["Último resultado"] for row in outbox_rows(load("alert_outbox")["alerts"])] == ["EXPIRED"]
     log = [(row["Estado"], row["Causas"]) for row in health_log_rows(load("health_log")["entries"])]
     assert ("DEGRADED", "LIVE_CYCLE_STALE") in log
+
+
+def test_the_client_reads_the_recorded_observation_responses():
+    report = serving("observation_report").observation_report(date(2025, 11, 25))
+    assert (report["session_day"], report["trades"]["closed"], report["trades"]["replay_closed"]) == (
+        "2025-11-25", 2, 2)
+    assert report["pressure"]["estimate"] is True and report["pressure"]["method"] == "OHLCV_PRESSURE_ESTIMATE_V1"
+    summary = serving("observation_summary").observation_summary(date(2025, 11, 25), date(2025, 11, 26))
+    assert [day["session_day"] for day in summary["days"]] == ["2025-11-25", "2025-11-26"]
