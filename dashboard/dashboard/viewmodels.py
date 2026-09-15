@@ -38,6 +38,7 @@ ERROR_MESSAGES = {
     "REQUEST_INVALID": "Parâmetros inválidos.",
     "UNAUTHORIZED": "Chave da API recusada.",
     "INTERNAL_ERROR": "Erro interno da API.",
+    "OBSERVATION_REQUEST_INVALID": "Pedido de observação inválido.",
 }
 REASON_MESSAGES = {
     "INVALIDATED": "a tese foi invalidada (stop sem posição ou zona perdida com CANCEL)",
@@ -474,3 +475,134 @@ def watchlist_ticker(text: str) -> str:
 def curve_limit_notice(fetched: int) -> str | None:
     """D59: GET /orders returns at most 1000 rows, newest first; a full page means older trades were left out."""
     return CURVE_LIMIT_NOTICE if fetched >= ORDER_LIST_LIMIT else None
+
+
+OBSERVATION_PRESSURE_TITLE = "Pressão estimada (OHLCV) × resultado — associação descritiva, não fluxo de ordens"
+ALIGNMENT_LABELS = {"ALIGNED": "a favor", "OPPOSED": "contra", "NEUTRAL": "neutra", "UNAVAILABLE": "indisponível"}
+STRENGTH_LABELS = {"WEAK": "fraca", "MODERATE": "moderada", "STRONG": "forte"}
+
+
+def fmt_duration(seconds: Any) -> str:
+    if seconds is None:
+        return EMPTY
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}h{minutes:02d}m{secs:02d}s" if hours else f"{minutes}m{secs:02d}s"
+
+
+def _pairs(mapping: Mapping[str, Any] | None) -> str:
+    return ", ".join(f"{key}: {value}" for key, value in sorted((mapping or {}).items())) or EMPTY
+
+
+def pressure_bucket_label(bucket: Mapping[str, Any]) -> str:
+    alignment = ALIGNMENT_LABELS.get(str(bucket.get("alignment")), str(bucket.get("alignment")))
+    strength = bucket.get("strength")
+    return alignment if strength is None else f"{alignment} · {STRENGTH_LABELS.get(str(strength), str(strength))}"
+
+
+@dataclass(frozen=True)
+class ObservationView:
+    title: str
+    status: str
+    cards: list[MetricCard]
+    operations: list[dict[str, str]]
+    trades: list[dict[str, str]]
+    trades_caption: str
+    latency: list[dict[str, str]]
+    pressure: list[dict[str, str]]
+    pressure_method: str
+    pressure_disclaimer: str
+    pressure_note: str
+
+
+def _latency_row(label: str, stats: Mapping[str, Any]) -> dict[str, str]:
+    return {"Medida": label, "Fills": str(stats["count"]), "Mediana": fmt_duration(stats.get("median_seconds")),
+            "p90": fmt_duration(stats.get("p90_seconds")), "Máx": fmt_duration(stats.get("max_seconds"))}
+
+
+def observation_view(report: Mapping[str, Any]) -> ObservationView:
+    failures, quality, action = report["provider_failures"], report["data_quality"], report["actionability"]
+    rechecks, alerts, worker, health = report["rechecks"], report["alerts"], report["worker"], report["health"]
+    trades, latency, pressure = report["trades"], report["latency"], report["pressure"]
+    codes: dict[str, int] = {}
+    for item in failures["by_run_kind"]:
+        for code, occurrences in item["codes"].items():
+            codes[code] = codes.get(code, 0) + int(occurrences)
+    failed_attempts = int(alerts["attempts"].get("FAILED", 0))
+    coverage = quality.get("coverage_pct")
+    seconds = ", ".join(
+        f"{state}: {fmt_duration(value)}" for state, value in sorted(health["seconds_by_state"].items())
+    )
+    return ObservationView(
+        title=f"Pregão {report['session_day']}",
+        status="Janela completa" if report["complete"] else f"Janela parcial (as-of {fmt_ts(report['as_of'])})",
+        cards=[
+            MetricCard("Falhas de provider", str(failures["total_failures"]), None),
+            MetricCard("Minutos ausentes", f"{quality['missing_bars']}/{quality['expected_bars']}", None),
+            MetricCard("503 de actionability", str(action["unverifiable"]), None),
+            MetricCard("Linhas de recheck", str(rechecks["rows"]), None),
+            MetricCard("Falhas de entrega", str(failed_attempts), None),
+            MetricCard("Reinícios do worker", str(worker["restarts"]), None),
+            MetricCard("Transições de saúde", str(health["transitions"]), None),
+            MetricCard("Trades fechados", str(trades["stats"]["trades"]), None),
+            MetricCard("R somado", fmt_r(trades["stats"]["sum_r"]), None),
+            MetricCard("Latência mediana", fmt_duration(latency["bar"]["median_seconds"]), None),
+        ],
+        operations=[
+            {"Métrica": "Falhas de provider", "Valor": str(failures["total_failures"]),
+             "Detalhe": f"{_pairs(codes)} · maior sequência LIVE: {failures['consecutive_live_max']}"},
+            {"Métrica": "Candles ausentes", "Valor": f"{quality['missing_bars']}/{quality['expected_bars']}",
+             "Detalhe": f"cobertura {EMPTY if coverage is None else f'{coverage}%'} · DATA_GAP {quality['gaps']} "
+                        f"({quality['gap_minutes']} min) · não avaliadas: {_pairs(quality['not_evaluated'])}"},
+            {"Métrica": "503 de actionability", "Valor": f"{action['unverifiable']}/{action['requests']}",
+             "Detalhe": _pairs(action["unverifiable_causes"])},
+            {"Métrica": "DATA_QUALITY_RECHECK", "Valor": str(rechecks["rows"]),
+             "Detalhe": f"status: {_pairs(rechecks['statuses'])} · sobre este pregão: "
+                        f"{_pairs(rechecks['about_this_session'])}"},
+            {"Métrica": "Entrega de alertas", "Valor": f"{failed_attempts} falha(s)",
+             "Detalhe": f"tentativas: {_pairs(alerts['attempts'])} · tipos: {_pairs(alerts['failure_types'])} · "
+                        f"pendentes no fim: {alerts['pending_at_end']}"},
+            {"Métrica": "Worker", "Valor": f"{worker['restarts']} reinício(s)",
+             "Detalhe": f"inícios {worker['starts']} · fins sem parada {worker['unclean_ends']} · paradas: "
+                        f"{_pairs(worker['stops'])} · sessão aberta no fim: "
+                        f"{'sim' if worker['open_session_at_end'] else 'não'}"},
+            {"Métrica": "Saúde", "Valor": f"{health['transitions']} transição(ões)",
+             "Detalhe": f"{health['state_at_start']} → {health['state_at_end']} · linhas do log {health['log_rows']} · "
+                        f"{seconds or EMPTY}"},
+        ],
+        trades=[
+            {"Ordem": str(row["order_id"])[:8], "Ticker": str(row["ticker"]), "Origem": str(row["origin"]),
+             "Fechada": fmt_ts(row["closed_at"]), "R": fmt_r(row["r_multiple"]), "MFE": fmt_r(row.get("mfe_r")),
+             "MAE": fmt_r(row.get("mae_r")), "Revisão": "sim" if row["needs_review"] else "não",
+             "Pressão (estimativa)": pressure_bucket_label({"alignment": row["pressure_alignment"],
+                                                            "strength": row.get("pressure_strength")})}
+            for row in trades["rows"]
+        ],
+        trades_caption=(f"Excluídas por revisão: {trades['excluded_needs_review']} · replay fechadas (fora das "
+                        f"métricas): {trades['replay_closed']} · sem fill: {_pairs(latency['unfilled'])}"),
+        latency=[
+            _latency_row("Candle do fill", latency["bar"]), _latency_row("Gravação do fill", latency["recorded"]),
+            *(_latency_row(f"Candle · {origin}", stats) for origin, stats in sorted(latency["bar_by_origin"].items())),
+        ],
+        pressure=[
+            {"Pressão": pressure_bucket_label(bucket), "Trades": str(bucket["trades"]), "Wins": str(bucket["wins"]),
+             "R somado": fmt_r(bucket["sum_r"]),
+             "R médio (n)": f"{fmt_r(bucket.get('mean_r'))} (n={bucket['trades']})"}  # D66: n beside the mean
+            for bucket in pressure["buckets"]
+        ],
+        pressure_method=str(pressure["method"]), pressure_disclaimer=str(pressure["disclaimer"]),
+        pressure_note=str(pressure["association_note"]),
+    )
+
+
+def observation_day_rows(summary: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"Pregão": str(day["session_day"]), "Completo": "sim" if day["complete"] else "não",
+         "Falhas de provider": str(day["provider_failures"]),
+         "Ausentes": f"{day['missing_bars']}/{day['expected_bars']}",
+         "503": str(day["actionability_unverifiable"]), "Rechecks": str(day["rechecks"]),
+         "Falhas de alerta": str(day["alert_failures"]), "Reinícios": str(day["worker_restarts"]),
+         "Fins sem parada": str(day["unclean_worker_ends"]), "Transições": str(day["health_transitions"]),
+         "Fills": str(day["fills"]), "Trades": str(day["trades"]), "R": fmt_r(day["sum_r"])}
+        for day in summary["days"]
+    ]

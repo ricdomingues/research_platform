@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from dashboard.charts import candlestick_figure, cumulative_r_figure
+from dashboard.charts import candlestick_figure, cumulative_r_figure, daily_r_figure, pressure_buckets_figure
 from dashboard.viewmodels import RPoint
 
 BARS = [
@@ -47,3 +47,18 @@ def test_cumulative_r_figure():
     (trace,) = figure.data
     assert (trace.name, list(trace.x), list(trace.y)) == (
         "R acumulado", ["2025-11-25 12:00", "2025-11-25 13:00"], [-1.0, 0.75])
+
+
+def test_daily_r_and_pressure_bucket_figures():
+    daily = daily_r_figure([{"session_day": "2025-11-25", "sum_r": "1.75"},
+                            {"session_day": "2025-11-26", "sum_r": "-1"}])
+    (bars,) = daily.data
+    assert (bars.type, list(bars.x), list(bars.y)) == ("bar", ["2025-11-25", "2025-11-26"], [1.75, -1.0])
+    buckets = [{"alignment": "ALIGNED", "strength": "STRONG", "trades": 5, "mean_r": "1.75"},
+               {"alignment": "UNAVAILABLE", "strength": None, "trades": 2, "mean_r": None}]
+    figure = pressure_buckets_figure(buckets, method="OHLCV_PRESSURE_ESTIMATE_V1")
+    (trace,) = figure.data
+    assert (list(trace.x), list(trace.y), list(trace.text)) == (
+        ["a favor · forte", "indisponível"], [1.75, None], ["n=5", "n<5"])  # no bar drawn at 0 for n < 5
+    assert "OHLCV_PRESSURE_ESTIMATE_V1" in figure.layout.title.text
+    assert "não é fluxo de ordens" in figure.layout.title.text

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from dashboard.viewmodels import RPoint
+from dashboard.viewmodels import RPoint, pressure_bucket_label
 
 ET = ZoneInfo("America/New_York")
 LEVELS = (("stop", "Stop"), ("target1", "Alvo 1"), ("target2", "Alvo 2"), ("trigger_price", "Gatilho"),
@@ -89,4 +89,24 @@ def cumulative_r_figure(points: Sequence[RPoint]) -> go.Figure:
     figure = go.Figure(go.Scatter(x=[_et_label(p.closed_at) for p in points],
                                   y=[float(p.cumulative_r) for p in points], mode="lines+markers", name="R acumulado"))
     figure.update_layout(title={"text": "R acumulado (ordens fechadas)"}, yaxis_title="R", height=360)
+    return figure
+
+
+def daily_r_figure(days: Sequence[Mapping[str, Any]]) -> go.Figure:
+    figure = go.Figure(go.Bar(x=[str(day["session_day"]) for day in days], y=[_number(day["sum_r"]) for day in days],
+                              name="R do pregão"))
+    figure.update_layout(title={"text": "R somado por pregão (trades sem revisão)"}, yaxis_title="R", height=320)
+    return figure
+
+
+def pressure_buckets_figure(buckets: Sequence[Mapping[str, Any]], *, method: str) -> go.Figure:
+    figure = go.Figure(go.Bar(
+        x=[pressure_bucket_label(bucket) for bucket in buckets],
+        # D66: a bucket without a mean (n < 5) gets no bar (a gap, never 0) and the label "n<5".
+        y=[None if bucket.get("mean_r") is None else _number(bucket["mean_r"]) for bucket in buckets],
+        text=["n<5" if bucket.get("mean_r") is None else f"n={bucket['trades']}" for bucket in buckets],
+        name="R médio",
+    ))
+    figure.update_layout(title={"text": f"R médio por pressão estimada ({method}) — não é fluxo de ordens"},
+                         yaxis_title="R", height=320)
     return figure

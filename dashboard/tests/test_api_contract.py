@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from dashboard.charts import candlestick_figure, cumulative_r_figure
+from dashboard.charts import candlestick_figure, cumulative_r_figure, daily_r_figure
 from dashboard.client import ApiClient
 from dashboard.viewmodels import (
     REAL_PHASE_0_MESSAGE,
@@ -22,6 +22,8 @@ from dashboard.viewmodels import (
     health_view,
     market_tickers,
     metric_cards,
+    observation_day_rows,
+    observation_view,
     order_rows,
     outbox_rows,
     pressure_display,
@@ -126,3 +128,20 @@ def test_the_client_reads_the_recorded_observation_responses():
     assert report["pressure"]["estimate"] is True and report["pressure"]["method"] == "OHLCV_PRESSURE_ESTIMATE_V1"
     summary = serving("observation_summary").observation_summary(date(2025, 11, 25), date(2025, 11, 26))
     assert [day["session_day"] for day in summary["days"]] == ["2025-11-25", "2025-11-26"]
+
+
+def test_observation_views_from_the_recorded_responses():
+    view = observation_view(load("observation_report"))
+    cards = {card.label: card.value for card in view.cards}
+    assert (cards["Trades fechados"], cards["R somado"], cards["Latência mediana"]) == ("2", "+3.50R", "1h05m00s")
+    assert view.status == "Janela completa"
+    assert [row["Pressão"] for row in view.pressure] == ["indisponível"]  # the 09:00 signal had no bar before it
+    assert view.pressure_method == "OHLCV_PRESSURE_ESTIMATE_V1"
+    operations = {row["Métrica"]: row for row in view.operations}
+    assert operations["Saúde"]["Valor"] == "2 transição(ões)" and "DEGRADED: 10m00s" in operations["Saúde"]["Detalhe"]
+    assert operations["Worker"]["Valor"] == "0 reinício(s)"
+    assert "replay fechadas (fora das métricas): 2" in view.trades_caption
+    summary = load("observation_summary")
+    assert [(row["Pregão"], row["Trades"]) for row in observation_day_rows(summary)] == [
+        ("2025-11-25", "2"), ("2025-11-26", "0")]
+    assert list(daily_r_figure(summary["days"]).data[0].y) == [3.5, 0.0]
