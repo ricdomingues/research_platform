@@ -338,4 +338,26 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "virtual_orders/api/tickers.py", "virtual_orders/api/routes/market.py",
         "virtual_orders/api/routes/portfolio.py", "virtual_orders/api/routes/observability.py",
     } <= api
+
+
+OBSERVATION_MODULES = (
+    "virtual_orders.readmodels.observation", "virtual_orders.readmodels.observation_window",
+    "virtual_orders.readmodels.observation_operations", "virtual_orders.readmodels.observation_trades",
+    "virtual_orders.analytics.observation", "virtual_orders.alerts.observation", "virtual_orders.observation",
+)
+EVALUATION_PACKAGES = ("virtual_orders/evaluator", "virtual_orders/ledger", "virtual_orders/marketdata")
+
+
+def _evaluation_files() -> list[Path]:
+    files = list(_core_files())
+    for package in EVALUATION_PACKAGES:
+        files.extend(sorted((SRC / package).rglob("*.py")))
+    return files
+
+
+def test_evaluation_never_reads_the_observation_report() -> None:
+    # Plan 4 (D66): the report and its recomputed pressure estimate never feed evaluation, fills or market data.
+    offenders = {_rel(path): _offending(path, OBSERVATION_MODULES) for path in _evaluation_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+    assert "virtual_orders/evaluator/cycle.py" in offenders and "core/fills/v1/engine.py" in offenders
     assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
