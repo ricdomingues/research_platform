@@ -254,8 +254,21 @@ alert_event_marks = Table(
     _ts("recorded_at"),
 )
 
+worker_sessions = Table(
+    "worker_sessions", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", UUID(as_uuid=True), nullable=False),
+    Column("event", Text, nullable=False),
+    _ts("recorded_at"),
+    Column("code_version", Text),
+    Column("host_fingerprint", Text),
+    Column("exit_code", Integer),
+    Column("reason", Text),
+)
+
 APPEND_ONLY_TABLES = (
     "signals", "orders", "order_events", "evaluation_runs", "evaluation_run_status",
     "order_eval_segments", "bar_batches", "bars_1m", "market_data_snapshots", "integrity_incidents",
     "data_quality_rechecks", "alert_outbox", "alert_delivery_attempts", "alert_event_marks", "health_state_log",
+    "worker_sessions",
 )

@@ -10,6 +10,7 @@ from datetime import date, datetime
 from sqlalchemy import Engine, text
 
 from virtual_orders.alerts.health_watch import HealthWatcher
+from virtual_orders.alerts.observation import enqueue_observation_alert
 from virtual_orders.alerts.outbox import deliver_pending_alerts, enqueue_event_alerts
 from virtual_orders.alerts.summary import enqueue_end_of_day_summary
 from virtual_orders.alerts.watch import run_watchlist_cycle
@@ -160,6 +161,10 @@ class WorkerJobs:
                                            recheck=recheck)
             except Exception as exc:  # noqa: BLE001 - n8n is never in the critical path
                 logger.error("end-of-day summary failed: %s", type(exc).__name__, exc_info=True)
+            try:
+                enqueue_observation_alert(s.engine, session_day=session.day)  # D70: counts only, one per session
+            except Exception as exc:  # noqa: BLE001 - n8n is never in the critical path
+                logger.error("observation alert failed: %s", type(exc).__name__)  # D70: type only, no exc_info
         return JobResult(END_OF_DAY, True, "COMPLETED")
 
     def health_watch(self) -> JobResult:

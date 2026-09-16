@@ -49,6 +49,7 @@ WORKER_ENTRYPOINT = "virtual_orders/worker/__main__.py"
 PLATFORM_PURE_MODULES = [
     "virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py",
     "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
+    "virtual_orders/analytics/observation.py",
 ]
 PLATFORM_INFRASTRUCTURE = (
     "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
@@ -100,7 +101,17 @@ def _imported_modules(path: Path) -> set[str]:
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             names.add(node.module)
+            # `from pkg import submodule` must also be seen as `pkg.submodule` by the prefix checks below.
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
     return names
+
+
+def _relative_import_targets(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    return [
+        f"{'.' * node.level}{node.module or ''}" for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0
+    ]
 
 
 def _matches(name: str, prefix: str) -> bool:
@@ -246,6 +257,13 @@ def _root_test_files() -> list[Path]:
     return sorted((ROOT / "tests").rglob("*.py"))
 
 
+@pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=_rel)
+def test_src_has_no_relative_imports(path: Path) -> None:
+    # `_imported_modules` (and every boundary check built on it) only sees absolute imports; a relative import
+    # would silently evade every prefix check above. `src/` is asserted to have none rather than resolving them.
+    assert _relative_import_targets(path) == []
+
+
 def test_no_module_imports_a_conftest() -> None:
     # Plan 3B close-out entry 20: a conftest imported as a plain module can be registered out of order when test
     # files from different directories share one pytest call. Shared helpers live in tests/integration/support.py.
@@ -323,7 +341,7 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "dashboard/tests/test_api_contract.py",
     } <= dashboard
     assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
-    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 17  # D57
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 19  # D57 + Plan 4 D72
     assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
     neutral = {_rel(p) for p in _neutral_files()}
     assert {
@@ -338,3 +356,85 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "virtual_orders/api/routes/portfolio.py", "virtual_orders/api/routes/observability.py",
     } <= api
     assert "virtual_orders.marketdata.alpaca" in _imported_modules(SRC / COMPOSITION_ROOT)
+
+
+OBSERVATION_MODULES = (
+    "virtual_orders.readmodels.observation", "virtual_orders.readmodels.observation_window",
+    "virtual_orders.readmodels.observation_operations", "virtual_orders.readmodels.observation_trades",
+    "virtual_orders.analytics.observation", "virtual_orders.alerts.observation", "virtual_orders.observation",
+)
+EVALUATION_PACKAGES = ("virtual_orders/evaluator", "virtual_orders/ledger", "virtual_orders/marketdata")
+
+
+def _evaluation_files() -> list[Path]:
+    files = list(_core_files())
+    for package in EVALUATION_PACKAGES:
+        files.extend(sorted((SRC / package).rglob("*.py")))
+    return files
+
+
+def test_evaluation_never_reads_the_observation_report() -> None:
+    # Plan 4 (D66): the report and its recomputed pressure estimate never feed evaluation, fills or market data.
+    offenders = {_rel(path): _offending(path, OBSERVATION_MODULES) for path in _evaluation_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+    assert "virtual_orders/evaluator/cycle.py" in offenders and "core/fills/v1/engine.py" in offenders
+
+
+OBSERVATION_READMODEL_FORBIDDEN = (
+    "virtual_orders.ledger.writes", "virtual_orders.ledger.runs", "virtual_orders.marketdata.ingest",
+    "virtual_orders.evaluator.manual",
+)
+
+
+def _observation_readmodel_files() -> list[Path]:
+    return sorted((SRC / "virtual_orders/readmodels").glob("observation*.py"))
+
+
+def test_observation_read_models_never_import_the_evaluation_write_path() -> None:
+    # Plan 4 fix round 1 (reverse boundary): the report only reads facts evaluation already wrote; it never
+    # touches the write side (ledger writes/runs, market data ingest) or evaluator internals (manual).
+    offenders = {_rel(path): _offending(path, OBSERVATION_READMODEL_FORBIDDEN)
+                 for path in _observation_readmodel_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+    assert len(_observation_readmodel_files()) >= 4
+
+
+OBSERVATION_CLI = "virtual_orders/observation"
+
+
+def _observation_cli_files() -> list[Path]:
+    return sorted((SRC / OBSERVATION_CLI).rglob("*.py"))
+
+
+def test_the_observation_cli_never_imports_adapters_the_composition_root_or_the_http_layer() -> None:
+    # Not parametrized: an empty parameter set before the package exists would be reported as a skip.
+    files = _observation_cli_files()
+    forbidden = PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + APPLICATION_LAYER
+    assert {_rel(path) for path in files} >= {
+        "virtual_orders/observation/__init__.py", "virtual_orders/observation/__main__.py",
+        "virtual_orders/observation/render.py",
+    }
+    assert {_rel(path): _offending(path, forbidden) for path in files} == {_rel(path): [] for path in files}
+
+
+def test_boundary_scan_covers_the_plan_4_modules() -> None:
+    from virtual_orders.storage.tables import APPEND_ONLY_TABLES
+
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/readmodels/observation.py", "virtual_orders/readmodels/observation_window.py",
+        "virtual_orders/readmodels/observation_operations.py", "virtual_orders/readmodels/observation_trades.py",
+        "virtual_orders/ledger/worker_sessions.py", "virtual_orders/alerts/observation.py",
+        "virtual_orders/analytics/observation.py",
+    } <= neutral
+    assert "virtual_orders/analytics/observation.py" in PLATFORM_PURE_MODULES
+    assert "virtual_orders/api/routes/observation.py" in {_rel(p) for p in _api_files()}
+    assert {"virtual_orders/observation/__main__.py", "virtual_orders/observation/render.py"} <= {
+        _rel(p) for p in _observation_cli_files()}
+    assert "virtual_orders.bootstrap" not in _imported_modules(SRC / "virtual_orders/observation/__main__.py")
+    assert "dashboard/dashboard/views/observation.py" in {_dashboard_rel(p) for p in _dashboard_files()}
+    assert {"observation_report.json", "observation_summary.json"} <= {
+        path.name for path in (DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json")}
+    assert "worker_sessions" in APPEND_ONLY_TABLES
+    assert "virtual_orders.ledger.worker_sessions" in _imported_modules(SRC / "virtual_orders/worker/runner.py")
+    assert "virtual_orders.alerts.observation" in _imported_modules(SRC / "virtual_orders/worker/jobs.py")

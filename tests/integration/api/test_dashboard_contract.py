@@ -21,7 +21,7 @@ import os
 import re
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -87,10 +87,28 @@ def _canonicalize(name: str, body: Any) -> Any:
     key that IS stable across runs (ticker, then origin), so the fixture -- and the first-seen numbering the
     Normalizer assigns to the UUIDs inside it -- does not depend on that random tiebreak. This does not touch
     what the test asserts against the live API: only what gets written to/compared against the fixture file."""
+    if name in ("observation_report", "observation_summary"):
+        return _pin_wall_clock_latency(body)
     if name == "portfolio_virtual":
         positions = sorted(body["portfolio"]["positions"], key=lambda p: (p["position"]["ticker"], p["position"]["origin"]))
         return {**body, "portfolio": {**body["portfolio"], "positions": positions}}
     return body
+
+
+_WALL_CLOCK_LATENCY_STATS = frozenset({"recorded", "recorded_latency"})
+
+
+def _pin_wall_clock_latency(value: Any, key: str | None = None) -> Any:
+    """D72: latency measured to recorded_at uses the real database clock, so it differs on every recording; it is
+    pinned to 0 like the *_hash fields (only its shape is compared)."""
+    if isinstance(value, dict):
+        if key in _WALL_CLOCK_LATENCY_STATS:
+            return {name: (item if name == "count" or item is None else 0) for name, item in value.items()}
+        return {name: (0 if name == "recorded_latency_seconds" else _pin_wall_clock_latency(item, name))
+                for name, item in value.items()}
+    if isinstance(value, list):
+        return [_pin_wall_clock_latency(item) for item in value]
+    return value
 
 
 def _dump_json(value: Any) -> str:
@@ -236,6 +254,22 @@ def test_dashboard_contract_matches_the_recorded_api_responses(api):
     get("health_log", "/health/log", limit=20)
     get("alert_outbox", "/alert-outbox", outcome="EXPIRED")
     get("quality_overview", "/quality/overview")
+
+    # Plan 4 (D72): recorded after every earlier fixture, so re-recording leaves those files byte-identical. Health log
+    # and worker rows carry explicit instants inside the recorded session (their columns use the database clock).
+    session_id = uuid4()
+    with api.services.engine.begin() as conn:
+        for state, codes, hm in (("DEGRADED", ["LIVE_CYCLE_STALE"], "11:00"), ("HEALTHY", [], "11:10")):
+            conn.execute(tables.health_state_log.insert().values(state=state, cause_codes=codes,
+                                                                 observed_at=et(DAY, hm)))
+        conn.execute(tables.worker_sessions.insert(), [
+            {"session_id": session_id, "event": "STARTED", "code_version": "test-sha", "host_fingerprint": None,
+             "exit_code": None, "reason": None, "recorded_at": et(DAY, "09:00")},
+            {"session_id": session_id, "event": "STOPPED", "code_version": None, "host_fingerprint": None,
+             "exit_code": 0, "reason": "SIGNAL", "recorded_at": et(DAY, "17:00")},
+        ])
+    get("observation_report", "/observation/report", day=DAY)
+    get("observation_summary", "/observation/summary", **{"from": DAY, "to": NEXT})
 
     if not RECORD:  # no stale fixture: every file in the folder comes from this walk
         assert sorted(path.stem for path in FIXTURES.glob("*.json")) == sorted(recorder.names)

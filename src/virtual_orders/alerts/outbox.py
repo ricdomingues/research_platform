@@ -45,6 +45,7 @@ class AlertKind(StrEnum):
     PRESSURE = "PRESSURE"
     HEALTH = "HEALTH"
     END_OF_DAY_SUMMARY = "END_OF_DAY_SUMMARY"
+    OBSERVATION_DAILY = "OBSERVATION_DAILY"
 
 
 @dataclass(frozen=True)

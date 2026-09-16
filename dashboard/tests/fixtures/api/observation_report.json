@@ -1,0 +1,306 @@
+{
+  "actionability": {
+    "requests": 1,
+    "results": {
+      "ACTIONABLE": 1
+    },
+    "unfinished": 0,
+    "unverifiable": 0,
+    "unverifiable_causes": {},
+    "unverifiable_rate": "0"
+  },
+  "alerts": {
+    "attempts": {},
+    "created": {},
+    "failed_alerts": 0,
+    "failure_types": {},
+    "pending_at_end": 0
+  },
+  "as_of": "2000-01-01T00:00:00+00:00",
+  "complete": true,
+  "data_quality": {
+    "coverage_pct": "100",
+    "expected_bars": 371,
+    "gap_minutes": 0,
+    "gaps": 0,
+    "missing_bars": 0,
+    "not_evaluated": {},
+    "orders_measured": 2,
+    "orders_with_missing": 0
+  },
+  "definitions": {
+    "actionability": "Manual-order actionability checks clicked inside the window; unverifiable are the HTTP 503 ACTIONABILITY_UNVERIFIABLE answers, split into provider failure, missing minutes and policy contract violation.",
+    "alerts": "Alerts created and delivery attempts made inside the window (database clock): outcomes, failure types (HTTP status or exception type) and alerts created in the window still undelivered at its end.",
+    "data_quality": "Missing bars from the DATA_QUALITY:<session> events of non-replay orders (order-minutes), DATA_GAP events that start inside the session, and not_evaluated reasons of the latest completed END_OF_DAY run of the session.",
+    "health": "health_state_log rows inside the window: transitions are state changes (a row whose state differs from the previous row's, the first compared with the state in force at the window start); log_rows counts every row, including cause-code-only changes. Also states entered, cause codes and seconds spent in each state.",
+    "latency": "Per FILLED event in the window: seconds from the signal created_at to the fill bar start and to the moment the fill was recorded; nearest-rank median and p90, never interpolated. Orders created in the window without a fill as of the report are counted by outcome (EXPIRED, INVALIDATED, CANCELED or NOT_FILLED_YET); this is a snapshot as of the report, so created is not filled plus unfilled in general.",
+    "pressure": "An OHLCV pressure estimate recomputed at report time from the last 30 stored bars strictly before each closed trade's signal minute, across sessions and as of the report (each trade records window_start, window_end and spans_sessions), grouped by alignment with the trade direction and CMF strength against the trade R. CMF 0.05/0.15 and 30 bars are labelled conventions. A bucket mean needs at least 5 trades; n is shown beside it. It is an estimate, not order flow, descriptive only, never stored and never used by any evaluation.",
+    "provider_failures": "Provider failures recorded in run details (LIVE/WATCHLIST ingest_failures, OPENING source_failures, END_OF_DAY unavailable, QUALITY_RECHECK ingest_failures and unavailable, ACTIONABILITY ingest_error), counted per run and feed as fixed codes; messages never leave the database. Failed runs are counted by exception type name, or UNKNOWN. consecutive_live_max is the longest run of consecutive completed LIVE cycles inside this window with the same feed failing: it restarts at the window boundary, skips failed runs and is not the /health rule.",
+    "rechecks": "DATA_QUALITY_RECHECK runs whose market instant falls in the window and the rows they recorded, plus every recheck row about this session recorded up to the report (about_this_session). Those rows also count in the rows of the window whose run recorded them, so the two are never summed. not_evaluated excludes the ALREADY_RECHECKED and ALREADY_EVALUATED skips, which are counted in skipped.",
+    "trades": "Non-replay virtual orders: created, filled (FILLED bar in the window), closed (closing event recorded as of the report). Statistics exclude needs_review orders (spec 5.4); MFE/MAE come from the projection (spec D3). The MFE/MAE median is the middle value, or the mean of the two middle values for an even count (latency uses nearest-rank instead). Replay orders are only counted in replay_closed.",
+    "window": "From 00:00 ET of the day after the previous NYSE session to 00:00 ET of the day after the session. Evaluation facts belong to the window by their market instant (a still-running run without one falls back to its database start time); health log, alert and worker rows by the database clock. Every row is read as of the database clock at the request, and the whole report is read in one read-only REPEATABLE READ snapshot taken after that instant; complete = as_of is past the window end.",
+    "worker": "worker_sessions rows: starts, restarts (a start after any earlier session), stop reasons and exit codes. A session without a stop row is open: running, or ended without one. open_session_at_end = the last session started by the window end has no stop row by then. An unclean end (no stop row before the next start) is only detectable at the next start and belongs to the window of that start; a still-open session with no later start is open, never a restart. A LOCK_LOST stop is always clean, even when recorded after the successor's start."
+  },
+  "health": {
+    "cause_codes": {
+      "LIVE_CYCLE_STALE": 1
+    },
+    "entered": {
+      "DEGRADED": 1,
+      "HEALTHY": 1
+    },
+    "log_rows": 2,
+    "seconds_by_state": {
+      "DEGRADED": 600,
+      "HEALTHY": 46200,
+      "UNKNOWN": 39600
+    },
+    "state_at_end": "HEALTHY",
+    "state_at_start": "UNKNOWN",
+    "transitions": 2
+  },
+  "latency": {
+    "bar": {
+      "count": 2,
+      "max_seconds": 3900,
+      "median_seconds": 3900,
+      "p90_seconds": 3900
+    },
+    "bar_by_origin": {
+      "AUTO_STRATEGY": {
+        "count": 1,
+        "max_seconds": 3900,
+        "median_seconds": 3900,
+        "p90_seconds": 3900
+      },
+      "MANUAL_USER": {
+        "count": 1,
+        "max_seconds": 3900,
+        "median_seconds": 3900,
+        "p90_seconds": 3900
+      }
+    },
+    "recorded": {
+      "count": 2,
+      "max_seconds": 0,
+      "median_seconds": 0,
+      "p90_seconds": 0
+    },
+    "rows": [
+      {
+        "bar_latency_seconds": 3900,
+        "fill_bar_ts": "2025-11-25T15:05:00+00:00",
+        "order_id": "00000000-0000-4000-8000-000000000001",
+        "origin": "AUTO_STRATEGY",
+        "recorded_at": "2000-01-01T00:00:00+00:00",
+        "recorded_latency_seconds": 0,
+        "signal_created_at": "2025-11-25T14:00:00+00:00",
+        "ticker": "AAPL"
+      },
+      {
+        "bar_latency_seconds": 3900,
+        "fill_bar_ts": "2025-11-25T15:05:00+00:00",
+        "order_id": "00000000-0000-4000-8000-000000000002",
+        "origin": "MANUAL_USER",
+        "recorded_at": "2000-01-01T00:00:00+00:00",
+        "recorded_latency_seconds": 0,
+        "signal_created_at": "2025-11-25T14:00:00+00:00",
+        "ticker": "AAPL"
+      }
+    ],
+    "unfilled": {}
+  },
+  "pressure": {
+    "association_note": "Descriptive counts over a small paper sample: not causal evidence, not a trading signal, and never used by any evaluation. A bucket mean is shown only with at least 5 trades; n is always shown beside it.",
+    "buckets": [
+      {
+        "alignment": "UNAVAILABLE",
+        "mean_r": null,
+        "strength": null,
+        "sum_r": "3.5",
+        "trades": 2,
+        "wins": 2
+      }
+    ],
+    "cmf_threshold": "0.05",
+    "disclaimer": "Estimate derived from 1-minute OHLCV bars; it is not order-flow or trade-side data.",
+    "estimate": true,
+    "method": "OHLCV_PRESSURE_ESTIMATE_V1",
+    "min_trades_for_mean": 5,
+    "strong_cmf": "0.15",
+    "unavailable_reasons": {
+      "NO_BARS": 2
+    },
+    "window_bars": 30
+  },
+  "provider_failures": {
+    "by_run_kind": [
+      {
+        "codes": {},
+        "failed_run_errors": {},
+        "failed_runs": 0,
+        "failures": 0,
+        "feeds": [],
+        "feeds_total": 0,
+        "run_kind": "LIVE",
+        "runs": 4,
+        "runs_with_failures": 0
+      },
+      {
+        "codes": {},
+        "failed_run_errors": {},
+        "failed_runs": 0,
+        "failures": 0,
+        "feeds": [],
+        "feeds_total": 0,
+        "run_kind": "END_OF_DAY",
+        "runs": 1,
+        "runs_with_failures": 0
+      },
+      {
+        "codes": {},
+        "failed_run_errors": {},
+        "failed_runs": 0,
+        "failures": 0,
+        "feeds": [],
+        "feeds_total": 0,
+        "run_kind": "ACTIONABILITY",
+        "runs": 1,
+        "runs_with_failures": 0
+      }
+    ],
+    "consecutive_live_max": 0,
+    "total_failures": 0
+  },
+  "rechecks": {
+    "about_this_session": {},
+    "not_evaluated": {},
+    "rows": 0,
+    "runs": 0,
+    "sessions": [],
+    "skipped": {},
+    "statuses": {},
+    "terminal_reasons": {}
+  },
+  "report_version": "OBSERVATION_REPORT_V1",
+  "session_close_utc": "2025-11-25T21:00:00+00:00",
+  "session_day": "2025-11-25",
+  "session_open_utc": "2025-11-25T14:30:00+00:00",
+  "trades": {
+    "closed": 2,
+    "created": {
+      "AUTO_STRATEGY": 1,
+      "MANUAL_USER": 1
+    },
+    "excluded_needs_review": 0,
+    "filled": 2,
+    "replay_closed": 2,
+    "rows": [
+      {
+        "closed_at": "2025-11-25T17:50:00+00:00",
+        "direction": "LONG",
+        "mae_r": "-0.125",
+        "mfe_r": "2.375",
+        "needs_review": false,
+        "opened_at": "2025-11-25T15:05:00+00:00",
+        "order_id": "00000000-0000-4000-8000-000000000001",
+        "origin": "AUTO_STRATEGY",
+        "pressure_alignment": "UNAVAILABLE",
+        "pressure_cmf": null,
+        "pressure_spans_sessions": null,
+        "pressure_strength": null,
+        "pressure_unavailable_reason": "NO_BARS",
+        "pressure_window_end": null,
+        "pressure_window_start": null,
+        "r_multiple": "1.75",
+        "strategy": "REXSHARE",
+        "ticker": "AAPL"
+      },
+      {
+        "closed_at": "2025-11-25T17:50:00+00:00",
+        "direction": "LONG",
+        "mae_r": "-0.125",
+        "mfe_r": "2.375",
+        "needs_review": false,
+        "opened_at": "2025-11-25T15:05:00+00:00",
+        "order_id": "00000000-0000-4000-8000-000000000002",
+        "origin": "MANUAL_USER",
+        "pressure_alignment": "UNAVAILABLE",
+        "pressure_cmf": null,
+        "pressure_spans_sessions": null,
+        "pressure_strength": null,
+        "pressure_unavailable_reason": "NO_BARS",
+        "pressure_window_end": null,
+        "pressure_window_start": null,
+        "r_multiple": "1.75",
+        "strategy": "REXSHARE",
+        "ticker": "AAPL"
+      }
+    ],
+    "stats": {
+      "losses": 0,
+      "mean_mae_r": "-0.125",
+      "mean_mfe_r": "2.375",
+      "mean_r": "1.75",
+      "median_mae_r": "-0.125",
+      "median_mfe_r": "2.375",
+      "sum_r": "3.5",
+      "trades": 2,
+      "win_rate": "1",
+      "wins": 2
+    },
+    "stats_by_origin": {
+      "AUTO_STRATEGY": {
+        "losses": 0,
+        "mean_mae_r": "-0.125",
+        "mean_mfe_r": "2.375",
+        "mean_r": "1.75",
+        "median_mae_r": "-0.125",
+        "median_mfe_r": "2.375",
+        "sum_r": "1.75",
+        "trades": 1,
+        "win_rate": "1",
+        "wins": 1
+      },
+      "MANUAL_USER": {
+        "losses": 0,
+        "mean_mae_r": "-0.125",
+        "mean_mfe_r": "2.375",
+        "mean_r": "1.75",
+        "median_mae_r": "-0.125",
+        "median_mfe_r": "2.375",
+        "sum_r": "1.75",
+        "trades": 1,
+        "win_rate": "1",
+        "wins": 1
+      }
+    }
+  },
+  "window_end": "2025-11-26T05:00:00+00:00",
+  "window_start": "2025-11-25T05:00:00+00:00",
+  "worker": {
+    "code_versions": [
+      "test-sha"
+    ],
+    "exit_codes": {
+      "0": 1
+    },
+    "open_session_at_end": false,
+    "restarts": 0,
+    "sessions": [
+      {
+        "code_version": "test-sha",
+        "exit_code": 0,
+        "reason": "SIGNAL",
+        "session_id": "00000000-0000-4000-8000-000000000020",
+        "started_at": "2025-11-25T14:00:00+00:00",
+        "stopped_at": "2025-11-25T22:00:00+00:00"
+      }
+    ],
+    "starts": 1,
+    "stops": {
+      "SIGNAL": 1
+    },
+    "unclean_ends": 0
+  }
+}

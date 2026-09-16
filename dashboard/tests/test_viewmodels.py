@@ -14,10 +14,13 @@ from dashboard.viewmodels import (
     cumulative_r,
     curve_limit_notice,
     describe_api_error,
+    fmt_duration,
     health_view,
     market_day_window,
     market_tickers,
     metric_cards,
+    observation_day_rows,
+    observation_view,
     order_rows,
     pressure_display,
     quality_view,
@@ -253,3 +256,97 @@ def test_owner_facing_limits_and_labels():
                                           "missing_bars": 35, "coverage_pct": "95.51"}]})
     assert row == {"Pregão": "2025-11-25", "Ordens": "2", "Minutos-ordem esperados": "780",
                    "Minutos-ordem ausentes": "35", "Cobertura": "95.51%"}  # M8: summed per order
+
+
+OBSERVATION_REPORT = {
+    "session_day": "2025-11-25", "as_of": "2025-11-25T20:00:00+00:00", "complete": False,
+    "provider_failures": {"total_failures": 4, "consecutive_live_max": 3, "by_run_kind": [
+        {"run_kind": "LIVE", "codes": {"SOURCE_ERROR": 3}}, {"run_kind": "OPENING", "codes": {"SOURCE_ERROR": 1}}]},
+    "data_quality": {"expected_bars": 390, "missing_bars": 35, "coverage_pct": "91.03", "gaps": 1, "gap_minutes": 35,
+                     "not_evaluated": {"PROVIDER_FAILURE": 1}},
+    "actionability": {"requests": 6, "unverifiable": 3,
+                      "unverifiable_causes": {"MISSING_MINUTES": 2, "PROVIDER_FAILURE": 1}},
+    "rechecks": {"rows": 2, "statuses": {"EVALUATED": 2}, "about_this_session": {}},
+    "alerts": {"attempts": {"DELIVERED": 1, "FAILED": 3}, "failure_types": {"ConnectTimeout": 2, "HTTP_502": 1},
+               "pending_at_end": 2},
+    "worker": {"starts": 3, "restarts": 3, "unclean_ends": 1, "stops": {"LOCK_LOST": 1}, "open_session_at_end": True},
+    "health": {"state_at_start": "HEALTHY", "state_at_end": "DEGRADED", "transitions": 2, "log_rows": 3,
+               "seconds_by_state": {"DEGRADED": 900, "HEALTHY": 36000}},
+    "trades": {"stats": {"trades": 1, "sum_r": "1.75"}, "excluded_needs_review": 1, "replay_closed": 2, "rows": [
+        {"order_id": "0f3e2d1c-0000-4000-8000-000000000001", "ticker": "AAPL", "origin": "AUTO_STRATEGY",
+         "closed_at": "2025-11-25T17:50:00+00:00", "r_multiple": "1.75", "mfe_r": "2.375", "mae_r": "-0.1",
+         "needs_review": False, "pressure_alignment": "ALIGNED", "pressure_strength": "STRONG"}]},
+    "latency": {
+        "bar": {"count": 2, "median_seconds": 3900, "p90_seconds": 3900, "max_seconds": 3900},
+        "recorded": {"count": 2, "median_seconds": 4000, "p90_seconds": 4100, "max_seconds": 4100},
+        "bar_by_origin": {"AUTO_STRATEGY": {"count": 2, "median_seconds": 3900, "p90_seconds": 3900,
+                                            "max_seconds": 3900}},
+        "unfilled": {"EXPIRED": 1},
+    },
+    "pressure": {"method": "OHLCV_PRESSURE_ESTIMATE_V1", "disclaimer": "Estimate, not order flow.",
+                 "association_note": "Descriptive counts, not causal.", "unavailable_reasons": {"NO_BARS": 1},
+                 "buckets": [
+                     {"alignment": "ALIGNED", "strength": "STRONG", "trades": 5, "wins": 4, "sum_r": "3.5",
+                      "mean_r": "0.7"},
+                     {"alignment": "UNAVAILABLE", "strength": None, "trades": 1, "wins": 0, "sum_r": "-1",
+                      "mean_r": None}]},
+}
+OBSERVATION_SUMMARY = {"sessions": 2, "days": [
+    {"session_day": "2025-11-25", "complete": True, "provider_failures": 4, "expected_bars": 390, "missing_bars": 35,
+     "actionability_unverifiable": 3, "rechecks": 2, "alert_failures": 3, "alerts_expired": 0, "worker_restarts": 3,
+     "unclean_worker_ends": 1, "health_transitions": 2, "fills": 2, "trades": 1, "sum_r": "1.75"},
+    {"session_day": "2025-11-26", "complete": False, "provider_failures": 0, "expected_bars": 0, "missing_bars": 0,
+     "actionability_unverifiable": 0, "rechecks": 0, "alert_failures": 0, "alerts_expired": 0, "worker_restarts": 0,
+     "unclean_worker_ends": 0, "health_transitions": 0, "fills": 0, "trades": 0, "sum_r": "0"},
+]}
+
+
+def test_durations_are_shown_in_hours_minutes_and_seconds():
+    assert (fmt_duration(None), fmt_duration(59), fmt_duration(3900), fmt_duration(36000)) == (
+        EMPTY, "0m59s", "1h05m00s", "10h00m00s")
+
+
+def test_the_observation_view_turns_every_section_into_display_strings():
+    view = observation_view(OBSERVATION_REPORT)
+    assert (view.title, view.status) == ("Pregão 2025-11-25", "Janela parcial (as-of 2025-11-25 15:00 ET)")
+    cards = {card.label: card.value for card in view.cards}
+    assert cards == {
+        "Falhas de provider": "4", "Minutos ausentes": "35/390", "503 de actionability": "3",
+        "Linhas de recheck": "2", "Falhas de entrega": "3", "Reinícios do worker": "3", "Transições de saúde": "2",
+        "Trades fechados": "1", "R somado": "+1.75R", "Latência mediana": "1h05m00s",
+    }
+    details = {row["Métrica"]: (row["Valor"], row["Detalhe"]) for row in view.operations}
+    assert details["Falhas de provider"] == ("4", "SOURCE_ERROR: 4 · maior sequência LIVE: 3")
+    assert details["Candles ausentes"] == ("35/390", "cobertura 91.03% · DATA_GAP 1 (35 min) · não avaliadas: "
+                                                     "PROVIDER_FAILURE: 1")
+    assert details["503 de actionability"] == ("3/6", "MISSING_MINUTES: 2, PROVIDER_FAILURE: 1")
+    assert details["Entrega de alertas"] == ("3 falha(s)", "tentativas: DELIVERED: 1, FAILED: 3 · tipos: "
+                                                          "ConnectTimeout: 2, HTTP_502: 1 · pendentes no fim: 2")
+    assert details["Worker"] == ("3 reinício(s)", "inícios 3 · fins sem parada 1 · paradas: LOCK_LOST: 1 · "
+                                                  "sessão aberta no fim: sim")
+    assert details["Saúde"] == ("2 transição(ões)", "HEALTHY → DEGRADED · linhas do log 3 · DEGRADED: 15m00s, "
+                                                     "HEALTHY: 10h00m00s")
+    assert details["DATA_QUALITY_RECHECK"] == ("2", "status: EVALUATED: 2 · sobre este pregão: —")
+    assert view.trades == [{"Ordem": "0f3e2d1c", "Ticker": "AAPL", "Origem": "AUTO_STRATEGY",
+                            "Fechada": "2025-11-25 12:50 ET", "R": "+1.75R", "MFE": "+2.38R", "MAE": "-0.10R",
+                            "Revisão": "não", "Pressão (estimativa)": "a favor · forte"}]
+    assert view.trades_caption == ("Excluídas por revisão: 1 · replay fechadas (fora das métricas): 2 · "
+                                   "sem fill: EXPIRED: 1")
+    assert [row["Medida"] for row in view.latency] == ["Candle do fill", "Gravação do fill", "Candle · AUTO_STRATEGY"]
+    assert (view.latency[1]["Mediana"], view.latency[1]["p90"]) == ("1h06m40s", "1h08m20s")
+    assert view.pressure == [  # n beside every mean; no mean below 5 trades (D66)
+        {"Pressão": "a favor · forte", "Trades": "5", "Wins": "4", "R somado": "+3.50R", "R médio (n)": "+0.70R (n=5)"},
+        {"Pressão": "indisponível", "Trades": "1", "Wins": "0", "R somado": "-1.00R", "R médio (n)": "— (n=1)"},
+    ]
+    assert (view.pressure_method, view.pressure_disclaimer, view.pressure_note) == (
+        "OHLCV_PRESSURE_ESTIMATE_V1", "Estimate, not order flow.", "Descriptive counts, not causal.")
+
+
+def test_summary_rows_and_the_observation_error_message():
+    rows = observation_day_rows(OBSERVATION_SUMMARY)
+    assert rows[0] == {"Pregão": "2025-11-25", "Completo": "sim", "Falhas de provider": "4", "Ausentes": "35/390",
+                       "503": "3", "Rechecks": "2", "Falhas de alerta": "3", "Reinícios": "3", "Fins sem parada": "1",
+                       "Transições": "2", "Fills": "2", "Trades": "1", "R": "+1.75R"}
+    assert (rows[1]["Completo"], rows[1]["R"]) == ("não", "+0.00R")
+    error = ApiRequestFailed(422, "OBSERVATION_REQUEST_INVALID", detail={"errors": ["NOT_A_SESSION:2025-11-29"]})
+    assert describe_api_error(error) == "Pedido de observação inválido. Códigos: NOT_A_SESSION:2025-11-29."
