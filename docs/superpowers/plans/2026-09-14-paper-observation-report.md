@@ -4965,4 +4965,29 @@ git tag -a plan/paper-observation-report-complete -m "Plan 4 — daily paper-obs
 
 ## Encerramento do controlador
 
-Seção preenchida pelo controlador no Step 5 da Task 13, no formato do Plano 3C: modelo de execução por task, rodadas de correção, saída da verificação do zero (contagens, `BASE=09f2eea`, autores, trailers), saída do smoke sem rede, estado da tag e caminho da nota de encerramento.
+**Modelo de execução.** Desenvolvimento dirigido por subagentes (`subagent-driven-development`): o controlador despachou um implementador e um revisor por task, sequencialmente, sem paralelismo entre tasks. Modelos, para economia de tokens: implementadores em `haiku` para T3, T9, T12 e T13 Step 1 (código pequeno e completo, sem ambiguidade de projeto); `sonnet` para o resto (T1, T2, T4–T8, T11). Revisores em `sonnet` por padrão, com `opus` reservado para T2 (runner/`worker_sessions`), T4 (maior read model), T5 (trades/latência/pressão), T6 (montagem do snapshot) e a revisão final de branch inteiro.
+
+**Travas do implementador e como foram tratadas.** A Task 4 travou três vezes (stream watchdog do agente, a primeira com ~10 min ocioso e ~950 linhas não commitadas): o controlador rodou os testes focados com guarda de 240s (18 passando em 1,95s, descartando um teste travado como causa), conferiu ruff/mypy limpos (114 arquivos) e, na terceira parada, commitou diretamente o código já verificado verbatim contra os blocos do brief (`c3b6966`; 1198/0/0) — sem evidência RED própria do controlador, com a revisão `opus` da task como portão de segurança real. A Task 13 Step 1 (`haiku`) também travou; o controlador verificou o acréscimo puro ao arquivo de fronteiras verbatim contra o bloco do plano (448 testes de fronteira passando, raiz 1247/0/0, dashboard 56/0/0, ruff/mypy limpos, sem trailers) e commitou diretamente (`026ab7c`), sem uma revisão de task isolada — a correção foi conferida dentro da revisão final de branch inteiro, que a diffou linha a linha contra o plano.
+
+**Rodadas de correção.** Task 6: um round único (Important do controlador — teste de fronteira engolindo o último assert da cobertura do 3C — mais minors baratos). Task 8: um round único (Important mandado pelo plano — ramo `INVALID:DATABASE_URL` sem teste — verificado pelo controlador diretamente, sem abrir uma vaga de re-revisão). Revisão final de branch inteiro (`opus`, `09f2eea..026ab7c`): 0 Critical, 1 Important (I1), 10 Minor → **Ready to merge — com correções**. Uma única rodada de correção (commit `4fc735b`) tratou I1, M3, M4, M5 mais os baratos M1, M2, M6, M9; re-revisão de escopo restrito (`sonnet`, sem testes novos): os 8 achados **ADDRESSED**, sem quebra nova.
+
+**Verificação do zero (Task 13 Step 2, `BASE=09f2eea`, re-rodada depois do fix wave, no commit `4fc735b`):**
+- Raiz: 1372 passando, 0 skips, 0 warnings (`N_BASE = 1128` herdados do Plano 3C).
+- Dashboard: 56 passando, 0 skips, 0 warnings.
+- Chamada única mista (fronteiras + `analytics`/`readmodels`/`integration`/`api`/`worker`/`deploy`): 680 testes passando.
+- `migrations from an empty database: OK` (upgrade/downgrade/upgrade a partir de um banco vazio).
+- `git diff --stat plan/virtual-order-engine-core-complete -- src/core` e `git status --porcelain -- src/core`: ambos vazios.
+- `uv.lock`, `dashboard/uv.lock` e `.github/workflows/ci.yml`: sem diff contra `09f2eea`.
+- ruff e mypy limpos nos dois projetos (121 arquivos na raiz, 16 no dashboard).
+- 17 commits até esse ponto (18 com este encerramento), autor e committer únicos `Ricardo Carneiro <132141856+ricdomingues@users.noreply.github.com>`, `no AI trailers`.
+
+**Smoke sem rede (Task 13 Step 3, re-rodado em `4fc735b`, `env -i`):**
+- 24 rotas, exatamente as esperadas.
+- CLI sem config: `{"error": "CONFIG_INVALID", "errors": ["MISSING:DATABASE_URL"]}`, `exit=2`.
+- CLI com banco inalcançável (`postgresql+psycopg://vo:hunter2@127.0.0.1:1/x`): `{"error": "DATABASE_UNAVAILABLE", "type": "OperationalError"}`, sem `hunter2` na saída, `exit=4`.
+- Worker sem config: `exit=2` (worker inalterado).
+- Dashboard: `import dashboard.views.observation as v; print(v.render.__name__)` → `render` (a view importa sem servidor Streamlit e sem chamar a API).
+
+**Estado da tag.** Nenhuma revisão está aberta no ledger (a re-revisão do fix wave marcou os 8 achados como ADDRESSED, sem quebra nova), então a Task 13 Step 6 pode criar a tag `plan/paper-observation-report-complete` — criada localmente após esta verificação do zero, sem push — quando for executada; esse passo fica fora do escopo desta Task 13 Step 5 e não foi executado por este encerramento (nenhuma tag `plan/paper-observation-report-complete` existe hoje no repositório). O responsável abre e mescla o PR de `plan-4-observation` para `main` pelo CI obrigatório (`engine` e `dashboard`); nenhum push foi feito por este encerramento.
+
+**Nota de encerramento:** `docs/superpowers/notes/2026-09-14-plan4-closeout.md`.
