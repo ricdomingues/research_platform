@@ -398,3 +398,26 @@ def test_the_observation_cli_never_imports_adapters_the_composition_root_or_the_
         "virtual_orders/observation/render.py",
     }
     assert {_rel(path): _offending(path, forbidden) for path in files} == {_rel(path): [] for path in files}
+
+
+def test_boundary_scan_covers_the_plan_4_modules() -> None:
+    from virtual_orders.storage.tables import APPEND_ONLY_TABLES
+
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/readmodels/observation.py", "virtual_orders/readmodels/observation_window.py",
+        "virtual_orders/readmodels/observation_operations.py", "virtual_orders/readmodels/observation_trades.py",
+        "virtual_orders/ledger/worker_sessions.py", "virtual_orders/alerts/observation.py",
+        "virtual_orders/analytics/observation.py",
+    } <= neutral
+    assert "virtual_orders/analytics/observation.py" in PLATFORM_PURE_MODULES
+    assert "virtual_orders/api/routes/observation.py" in {_rel(p) for p in _api_files()}
+    assert {"virtual_orders/observation/__main__.py", "virtual_orders/observation/render.py"} <= {
+        _rel(p) for p in _observation_cli_files()}
+    assert "virtual_orders.bootstrap" not in _imported_modules(SRC / "virtual_orders/observation/__main__.py")
+    assert "dashboard/dashboard/views/observation.py" in {_dashboard_rel(p) for p in _dashboard_files()}
+    assert {"observation_report.json", "observation_summary.json"} <= {
+        path.name for path in (DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json")}
+    assert "worker_sessions" in APPEND_ONLY_TABLES
+    assert "virtual_orders.ledger.worker_sessions" in _imported_modules(SRC / "virtual_orders/worker/runner.py")
+    assert "virtual_orders.alerts.observation" in _imported_modules(SRC / "virtual_orders/worker/jobs.py")
