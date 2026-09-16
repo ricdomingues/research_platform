@@ -59,7 +59,9 @@ _WINDOW_RUNS = text(
             ORDER BY s.id DESC LIMIT 1
         ) latest ON true
         JOIN LATERAL (
-            SELECT s.detail FROM evaluation_run_status s WHERE s.run_id = r.run_id ORDER BY s.id LIMIT 1
+            SELECT s.detail FROM evaluation_run_status s
+            WHERE s.run_id = r.run_id AND s.recorded_at <= :as_of
+            ORDER BY s.id LIMIT 1
         ) first ON true
         WHERE r.kind = ANY(CAST(:kinds AS text[])) AND r.started_at <= :as_of
     ) runs
@@ -232,7 +234,7 @@ _SESSION_QUALITY = text(
     SELECT COUNT(DISTINCT e.order_id) AS orders,
            COALESCE(SUM((e.payload->>'expected_bars')::int), 0) AS expected_bars,
            COALESCE(SUM((e.payload->>'missing_bars')::int), 0) AS missing_bars,
-           COUNT(*) FILTER (WHERE (e.payload->>'missing_bars')::int > 0) AS orders_with_missing
+           COUNT(DISTINCT e.order_id) FILTER (WHERE (e.payload->>'missing_bars')::int > 0) AS orders_with_missing
     FROM order_events e
     JOIN orders o ON o.id = e.order_id
     WHERE NOT o.replay AND e.type = 'DATA_QUALITY' AND e.event_key = :event_key AND e.recorded_at <= :as_of
@@ -421,6 +423,17 @@ _STOPS = text(
     """
 )
 
+# M2: a session that started two or more starts before the window (so it never appears in `_STARTS`) can still
+# write its STOPPED row inside the window -- the D62-blessed "a successor already took the lock before our
+# finally" case. Selecting by the stop's own recorded_at, independent of `_STARTS`, lets `stops`/`exit_codes`
+# count it too, by session_id union with the starts-keyed lookup above.
+_STOPS_IN_WINDOW = text(
+    """
+    SELECT session_id, recorded_at, exit_code, reason FROM worker_sessions
+    WHERE event = 'STOPPED' AND recorded_at >= :start AND recorded_at < :end AND recorded_at <= :as_of
+    """
+)
+
 
 def worker_activity(conn: Connection, window: ObservationWindow) -> WorkerSection:
     """D62: a session without a stop row is open. An unclean end is only detectable when the NEXT start appears and
@@ -440,7 +453,8 @@ def worker_activity(conn: Connection, window: ObservationWindow) -> WorkerSectio
         elif before.recorded_at > row.recorded_at and before.reason != "LOCK_LOST":
             unclean += 1  # a stop written after the next start, other than a successor taking a lost lock
     inside = [row for row in starts if row.recorded_at >= window.start]
-    window_stops = [stop for stop in stops.values() if window.start <= stop.recorded_at < window.end]
+    reported_stops = {**stops, **{row.session_id: row for row in conn.execute(_STOPS_IN_WINDOW, params)}}
+    window_stops = [stop for stop in reported_stops.values() if window.start <= stop.recorded_at < window.end]
     last_stop = stops.get(starts[-1].session_id) if starts else None
     return WorkerSection(
         starts=len(inside), restarts=restarts, unclean_ends=unclean,

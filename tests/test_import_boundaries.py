@@ -101,7 +101,17 @@ def _imported_modules(path: Path) -> set[str]:
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             names.add(node.module)
+            # `from pkg import submodule` must also be seen as `pkg.submodule` by the prefix checks below.
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
     return names
+
+
+def _relative_import_targets(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    return [
+        f"{'.' * node.level}{node.module or ''}" for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0
+    ]
 
 
 def _matches(name: str, prefix: str) -> bool:
@@ -245,6 +255,13 @@ def test_boundary_scan_covers_the_worker_and_alert_packages() -> None:
 
 def _root_test_files() -> list[Path]:
     return sorted((ROOT / "tests").rglob("*.py"))
+
+
+@pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=_rel)
+def test_src_has_no_relative_imports(path: Path) -> None:
+    # `_imported_modules` (and every boundary check built on it) only sees absolute imports; a relative import
+    # would silently evade every prefix check above. `src/` is asserted to have none rather than resolving them.
+    assert _relative_import_targets(path) == []
 
 
 def test_no_module_imports_a_conftest() -> None:

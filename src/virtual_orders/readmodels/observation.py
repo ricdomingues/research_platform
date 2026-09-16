@@ -217,6 +217,10 @@ def daily_row(report: ObservationReport) -> DailyRow:
 def build_observation_summary(conn: Connection, windows: Sequence[ObservationWindow]) -> ObservationSummary:
     if not windows:
         raise ValueError("a summary needs at least one session window")
+    if len({window.as_of for window in windows}) != 1:
+        raise ValueError("a summary needs every window to share one as_of")
+    if [window.session_day for window in windows] != sorted(window.session_day for window in windows):
+        raise ValueError("a summary needs its windows sorted by session_day")
     reports = [build_observation_report(conn, window) for window in windows]
     rows = [row for report in reports for row in report.trades.rows]
     included = [row for row in rows if not row.needs_review]

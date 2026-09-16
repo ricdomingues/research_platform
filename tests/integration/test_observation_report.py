@@ -1,5 +1,5 @@
-from dataclasses import asdict
-from datetime import date
+from dataclasses import asdict, replace
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -127,6 +127,25 @@ def test_build_observation_summary_rejects_an_empty_window_sequence(engine):
         ValueError, match="a summary needs at least one session window"
     ):
         build_observation_summary(conn, [])
+
+
+def test_build_observation_summary_rejects_windows_that_do_not_share_one_as_of(engine):
+    windows = summary_sessions(date(2025, 11, 24), date(2025, 11, 26), acquire_data_as_of(engine))
+    mismatched = [windows[0], replace(windows[1], as_of=windows[1].as_of + timedelta(seconds=1))]
+
+    with observation_snapshot(engine) as conn, pytest.raises(
+        ValueError, match="a summary needs every window to share one as_of"
+    ):
+        build_observation_summary(conn, mismatched)
+
+
+def test_build_observation_summary_rejects_windows_out_of_order(engine):
+    windows = summary_sessions(date(2025, 11, 24), date(2025, 11, 26), acquire_data_as_of(engine))
+
+    with observation_snapshot(engine) as conn, pytest.raises(
+        ValueError, match="a summary needs its windows sorted by session_day"
+    ):
+        build_observation_summary(conn, list(reversed(windows)))
 
 
 def test_require_snapshot_rejects_a_repeatable_read_connection_that_is_not_read_only(engine):

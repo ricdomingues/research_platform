@@ -196,10 +196,10 @@ class PressureBucket:
 
 
 _ALIGNMENT_ORDER = {item: index for index, item in enumerate(Alignment)}
-_STRENGTH_ORDER: dict[Strength | None, int] = {}
-for index, item in enumerate(Strength):
-    _STRENGTH_ORDER[item] = index  # type: ignore[index]
-_STRENGTH_ORDER[None] = -1
+_STRENGTH_MEMBERS: list[Strength] = list(Strength)
+_STRENGTH_ORDER: dict[Strength | None, int] = (
+    {item: index for index, item in enumerate(_STRENGTH_MEMBERS)} | {None: -1}
+)
 
 
 def pressure_buckets(items: Iterable[tuple[Alignment, Strength | None, Decimal]]) -> list[PressureBucket]:

@@ -228,6 +228,26 @@ def test_worker_restarts_unclean_ends_and_open_sessions(engine):
     assert next_day.stops == {} and next_day.code_versions == ("sha-c",)
 
 
+def test_worker_stops_count_a_late_stop_from_a_session_that_started_further_back(engine):
+    # M2: s_old started two starts before the window (before s_mid, which is the session "in force" at window
+    # start); its STOPPED row arrives late, inside the SESSION window, after two successors already started.
+    s_old, s_mid, s_new = (uuid4() for _ in range(3))
+    with engine.begin() as conn:
+        worker_row(conn, s_old, "STARTED", et("2025-11-23", "08:00"), code_version="sha-a")
+        worker_row(conn, s_mid, "STARTED", et("2025-11-24", "08:00"), code_version="sha-b")
+        worker_row(conn, s_new, "STARTED", et(DAY, "08:00"), code_version="sha-c")
+        worker_row(conn, s_old, "STOPPED", et(DAY, "09:00"), exit_code=3, reason="LOCK_LOST")
+
+    with engine.connect() as conn:
+        section = worker_activity(conn, window_for(engine, SESSION))
+
+    # s_old is not one of `starts` (it is further back than s_mid, the session in force at window start), so it
+    # contributes to neither `restarts` nor `unclean_ends`/`sessions` -- only the stop counts below are the fix.
+    assert (section.starts, section.restarts, section.unclean_ends) == (1, 1, 1)
+    assert section.stops == {"LOCK_LOST": 1}
+    assert section.exit_codes == {"3": 1}
+
+
 def insert_health(conn, state, codes, at):
     conn.execute(tables.health_state_log.insert().values(state=state, cause_codes=codes, observed_at=at))
 

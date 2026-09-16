@@ -135,8 +135,10 @@ def pressure_before(
     bars = [Bar(ts=row.ts, open=row.open, high=row.high, low=row.low, close=row.close, volume=row.volume,
                 batch_id=row.batch_id) for row in reversed(rows)]
     estimate = estimate_pressure(bars)
-    if estimate is None:
-        return PressureBefore(None, INSUFFICIENT_BARS, None, None, None)
+    # estimate_pressure only returns None for fewer than 2 bars; `bars` is exactly OBSERVATION_PRESSURE_WINDOW_BARS
+    # here (INSUFFICIENT_BARS already returned above otherwise), so this can never fire. An explicit assertion
+    # fails loudly if OBSERVATION_PRESSURE_WINDOW_BARS is ever dropped below 2, instead of silently mislabelling.
+    assert estimate is not None, "a full pressure window must always yield an estimate"
     first, last = bars[0].ts, bars[-1].ts
     return PressureBefore(estimate, None, first, last, market_day_start(first) != market_day_start(last))
 

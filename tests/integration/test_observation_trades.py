@@ -15,6 +15,7 @@ from tests.integration.support import (
     backdated_batch,
     feeds,
     flat_raw,
+    raw,
     scenario_bars,
     signal_body,
     submit_default,
@@ -115,6 +116,26 @@ def test_pressure_is_recomputed_from_bars_before_the_signal_and_paired_with_the_
     # MSFT has only 10 stored bars in its whole history as of the report; NVDA has none.
     assert insufficient == PressureBefore(None, "INSUFFICIENT_BARS", None, None, None)
     assert nothing == PressureBefore(None, "NO_BARS", None, None, None)
+
+
+def test_a_corrected_bar_is_picked_up_only_as_of_its_own_ingested_at(engine):
+    # M5: the same minute stored in two batches (a later corrected bar). All 30 bars are flat (zero-range, so
+    # close_location_value == 0) except the corrected 09:59 minute: CMF is driven entirely by that one bar, so it
+    # directly proves which version `_LAST_BARS_BEFORE` picked.
+    original = flat_raw(DAY, "09:30", "10:00", 100)  # 09:30-09:59, 30 flat bars
+    backdated_batch(engine, TICKER, original, ingested_at=et(DAY, "10:01"))
+    corrected = [raw(DAY, "09:59", 99, 101, 98, 101)]  # close == high: close_location_value == 1
+    backdated_batch(engine, TICKER, corrected, ingested_at=et(DAY, "10:05"))
+
+    with engine.connect() as conn:
+        before_correction = pressure_before(conn, ticker=TICKER, price_source=PRICE_SOURCE,
+                                            decided_at=et(DAY, "10:00"), as_of=et(DAY, "10:02"))
+        after_correction = pressure_before(conn, ticker=TICKER, price_source=PRICE_SOURCE,
+                                           decided_at=et(DAY, "10:00"), as_of=et(DAY, "10:10"))
+
+    assert before_correction.window_end == et(DAY, "09:59") and after_correction.window_end == et(DAY, "09:59")
+    assert before_correction.estimate is not None and before_correction.estimate.chaikin_money_flow == Decimal("0.0000")
+    assert after_correction.estimate is not None and after_correction.estimate.chaikin_money_flow == Decimal("0.0333")
 
 
 def test_an_early_session_signal_reads_the_last_bars_of_the_previous_session(engine):
