@@ -30,7 +30,18 @@ def next_fire(job: str, now: datetime, interval: int = 2) -> datetime:
 
 
 def test_job_ids_are_fixed():
-    assert list(triggers()) == ["live_cycle", "watchlist", "opening", "end_of_day", "health_watch", "deliver_alerts"]
+    assert list(triggers()) == ["live_cycle", "watchlist", "opening", "end_of_day", "health_watch",
+                                "deliver_alerts", "research_scan"]
+
+
+def test_research_scan_is_its_own_job_on_the_quarter_hour():
+    """Plan 5 (D91): a separate job on its own cadence, so a scan can never delay order evaluation."""
+    assert next_fire("research_scan", at("2025-11-24", "09:31")) == at("2025-11-24", "09:45")
+    assert next_fire("research_scan", at("2025-11-24", "09:46")) == at("2025-11-24", "10:00")
+    assert next_fire("research_scan", at("2025-11-24", "16:59")) == at("2025-11-25", "09:00")
+    # The cron is calendar-blind, exactly like every other job here: it fires on Thanksgiving too, and the job
+    # body is what consults the NYSE calendar and reports OUTSIDE_SESSION.
+    assert next_fire("research_scan", at("2025-11-27", "11:00")) == at("2025-11-27", "11:00")
 
 
 def test_watchlist_is_its_own_job_on_the_live_cadence():
@@ -76,7 +87,7 @@ def test_interval_outside_the_cron_minute_range_fails_at_startup(interval):
 
 @pytest.mark.parametrize("interval", [1, 2, 59])
 def test_interval_inside_the_cron_minute_range_is_valid(interval):
-    assert interval_config_errors(interval) == [] and len(build_schedule(interval)) == 6
+    assert interval_config_errors(interval) == [] and len(build_schedule(interval)) == 7
 
 
 def test_live_session_window_follows_the_nyse_calendar():

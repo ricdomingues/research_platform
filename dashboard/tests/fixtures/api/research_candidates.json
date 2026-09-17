@@ -1,0 +1,49 @@
+{
+  "candidates": [
+    {
+      "client_signal_id": "CANDLE_RESEARCH-candles-v1+features-v1+scoring-v1:AAPL:15m:2025-11-25T21:14:00+00:00",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "data_as_of": "2025-11-25T21:30:00+00:00",
+      "detected_at": "2025-11-25T21:14:00+00:00",
+      "deterministic_score": "0.555",
+      "direction": "LONG",
+      "entry_zone_high": null,
+      "entry_zone_low": null,
+      "feature_version": "features-v1",
+      "features": {
+        "atr14": "1.794898",
+        "breakout": "UNKNOWN",
+        "cmf": null,
+        "medium_term_trend": "UNKNOWN",
+        "pressure_side": null,
+        "relative_volume": "3",
+        "resistance_distance_pct": null,
+        "rsi14": "30.4527",
+        "short_term_trend": "DOWN",
+        "support_distance_pct": "6.0127",
+        "vwap_distance_pct": null
+      },
+      "id": 1,
+      "label_version": null,
+      "levels_errors": [],
+      "levels_valid": false,
+      "ml_probability": null,
+      "model_version": null,
+      "pattern": "BULLISH_ENGULFING",
+      "pattern_detection_id": 1,
+      "risk_reward": null,
+      "run_id": "00000000-0000-4000-8000-000000000022",
+      "scoring_version": "scoring-v1",
+      "stop": null,
+      "strategy": "CANDLE_RESEARCH",
+      "strategy_version": "candles-v1+features-v1+scoring-v1",
+      "target1": null,
+      "target2": null,
+      "ticker": "AAPL",
+      "timeframe": "15m"
+    }
+  ],
+  "feature_version": "features-v1",
+  "score_interpretation": "Deterministic composite in [0, 1] of the pattern's geometry and context score, trend alignment, relative volume, the OHLCV pressure ESTIMATE and structural room. It ranks research observations against each other under one fixed rule; it is not a probability, not an expected return and not a recommendation. P(target before stop) is reported separately as ml_probability, with its own model and feature versions.",
+  "scoring_version": "scoring-v1"
+}

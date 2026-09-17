@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from dashboard.viewmodels import RPoint, pressure_bucket_label
+from dashboard.viewmodels import RPoint, marker_label, pressure_bucket_label
 
 ET = ZoneInfo("America/New_York")
 LEVELS = (("stop", "Stop"), ("target1", "Alvo 1"), ("target2", "Alvo 2"), ("trigger_price", "Gatilho"),
@@ -21,6 +21,9 @@ MARKER_SYMBOLS = {
     "INVALIDATED": "x-open", "ZONE_LOST": "triangle-down-open", "ZONE_RECLAIMED": "triangle-up-open",
     "TRIGGER_HIT": "diamond",
 }
+# Plan 5 (spec 22): a detected pattern is drawn by its direction, so a chart reads at a glance without a legend.
+PATTERN_SYMBOLS = {"BULLISH": "triangle-up-dot", "BEARISH": "triangle-down-dot", "NEUTRAL": "circle-dot"}
+PATTERN_COLOURS = {"BULLISH": "#2E7D32", "BEARISH": "#C62828", "NEUTRAL": "#6A1B9A"}
 
 
 def _et_label(value: Any) -> str:
@@ -82,6 +85,35 @@ def candlestick_figure(
     figure.update_layout(title={"text": title}, height=640, legend={"orientation": "h"},
                          xaxis_rangeslider_visible=False)
     figure.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}, {"bounds": [16, 9.5], "pattern": "hour"}])
+    return figure
+
+
+def add_pattern_markers(figure: go.Figure, markers: Sequence[Mapping[str, Any]]) -> go.Figure:
+    """Draw detected candlestick patterns on an existing candlestick figure (spec 22).
+
+    Rendering only: every value was computed by the research engine and is drawn exactly as it arrived. A
+    detection whose candidate has no valid level chain carries no price, and becomes a vertical line — the same
+    treatment the platform already gives a DATA_GAP marker, so "nothing to draw at a price" never silently
+    becomes a point at zero.
+    """
+    priced: dict[str, list[Mapping[str, Any]]] = {}
+    for marker in markers:
+        direction = str(marker.get("direction", "NEUTRAL"))
+        if marker.get("price") is None:
+            at = _et_label(marker["ts"])
+            figure.add_shape(type="line", xref="x", x0=at, x1=at, yref="y domain", y0=0, y1=1,
+                             name=str(marker.get("pattern")),
+                             line={"dash": "dot", "width": 1, "color": PATTERN_COLOURS.get(direction, "gray")})
+        else:
+            priced.setdefault(direction, []).append(marker)
+    for direction, items in priced.items():
+        figure.add_trace(go.Scatter(
+            x=[_et_label(m["ts"]) for m in items], y=[_number(m["price"]) for m in items],
+            mode="markers+text", name=f"Padrão {direction}", text=[marker_label(m) for m in items],
+            textposition="top center", textfont={"size": 9},
+            marker={"symbol": PATTERN_SYMBOLS.get(direction, "circle-dot"), "size": 13,
+                    "color": PATTERN_COLOURS.get(direction, "#6A1B9A")},
+        ), row=1, col=1)
     return figure
 
 

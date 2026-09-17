@@ -19,7 +19,7 @@ CORE_ALLOWED = {"core/marketdata/nyse_calendar.py": {"pandas_market_calendars"}}
 
 NEUTRAL_PACKAGES = [
     "virtual_orders/storage", "virtual_orders/ledger", "virtual_orders/evaluator", "virtual_orders/readmodels",
-    "virtual_orders/alerts", "virtual_orders/analytics", "virtual_orders/portfolio",
+    "virtual_orders/alerts", "virtual_orders/analytics", "virtual_orders/portfolio", "virtual_orders/research",
 ]
 NEUTRAL_MARKETDATA = [
     "virtual_orders/marketdata/sources.py", "virtual_orders/marketdata/gateway.py",
@@ -50,6 +50,16 @@ PLATFORM_PURE_MODULES = [
     "virtual_orders/analytics/pressure.py", "virtual_orders/alerts/rules.py",
     "virtual_orders/analytics/vwap.py", "virtual_orders/analytics/portfolio.py",
     "virtual_orders/analytics/observation.py",
+    # Plan 5: the research engines are pure calculation over values handed to them. Only `repository.py`,
+    # `service.py` and `ml/registry.py` touch the database, and they are deliberately absent from this list.
+    "virtual_orders/research/models.py", "virtual_orders/research/timeframes.py",
+    "virtual_orders/research/candlesticks.py", "virtual_orders/research/indicators.py",
+    "virtual_orders/research/market_structure.py", "virtual_orders/research/features.py",
+    "virtual_orders/research/labels.py", "virtual_orders/research/levels.py",
+    "virtual_orders/research/scoring.py", "virtual_orders/research/setups.py",
+    "virtual_orders/research/backtest.py", "virtual_orders/research/promotion.py",
+    "virtual_orders/research/ml/dataset.py", "virtual_orders/research/ml/model.py",
+    "virtual_orders/research/ml/training.py", "virtual_orders/research/ml/inference.py",
 ]
 PLATFORM_INFRASTRUCTURE = (
     "virtual_orders.storage", "virtual_orders.ledger", "virtual_orders.evaluator", "virtual_orders.readmodels",
@@ -341,7 +351,8 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         "dashboard/tests/test_api_contract.py",
     } <= dashboard
     assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
-    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 19  # D57 + Plan 4 D72
+    # D57 + Plan 4 D72 (19) + Plan 5 D92 (8 research routes)
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 27
     assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
     neutral = {_rel(p) for p in _neutral_files()}
     assert {
@@ -438,3 +449,63 @@ def test_boundary_scan_covers_the_plan_4_modules() -> None:
     assert "worker_sessions" in APPEND_ONLY_TABLES
     assert "virtual_orders.ledger.worker_sessions" in _imported_modules(SRC / "virtual_orders/worker/runner.py")
     assert "virtual_orders.alerts.observation" in _imported_modules(SRC / "virtual_orders/worker/jobs.py")
+
+
+RESEARCH_PACKAGE = "virtual_orders/research"
+# The only research modules allowed to touch the database. Everything else is pure calculation over values
+# handed to it, which is what lets the same code run a live scan and a historical backtest (Plan 5).
+RESEARCH_PERSISTENCE = frozenset({
+    "virtual_orders/research/repository.py", "virtual_orders/research/service.py",
+    "virtual_orders/research/ml/registry.py",
+})
+RESEARCH_TABLES = ("pattern_detections", "setup_candidates", "research_backtests", "research_models")
+
+
+def _research_files() -> list[Path]:
+    return sorted((SRC / RESEARCH_PACKAGE).rglob("*.py"))
+
+
+def test_the_research_scan_can_never_reach_a_market_data_provider() -> None:
+    """Plan 5 (D91): research reads bars that ingestion already stored, through the as-of watermark.
+
+    No module of the domain may import a provider adapter, a provider library, or the gateway that resolves
+    one: the absence of a code path is what makes "a scan never calls a provider" a guarantee rather than a
+    convention.
+    """
+    forbidden = PROVIDER_ADAPTERS + PROVIDER_LIBRARIES + ("virtual_orders.marketdata.gateway",)
+    offenders = {_rel(path): _offending(path, forbidden) for path in _research_files()}
+    assert {name: modules for name, modules in offenders.items() if modules} == {}
+    assert "virtual_orders/research/service.py" in offenders  # the scan itself was actually scanned
+
+
+def test_only_the_research_persistence_modules_touch_the_database() -> None:
+    database = ("sqlalchemy", "psycopg", "virtual_orders.storage")
+    impure = {_rel(path) for path in _research_files() if _offending(path, database)}
+    assert impure == set(RESEARCH_PERSISTENCE)
+
+
+def test_every_pure_research_module_is_pinned_by_the_purity_check() -> None:
+    """A new research module must be classified deliberately: pure, or one of the three persistence modules."""
+    packages = {_rel(path) for path in _research_files() if path.name == "__init__.py"}
+    pure = {_rel(path) for path in _research_files()} - RESEARCH_PERSISTENCE - packages
+    assert pure == {name for name in PLATFORM_PURE_MODULES if name.startswith(RESEARCH_PACKAGE)}
+    assert len(pure) >= 16
+
+
+def test_boundary_scan_covers_the_plan_5_modules() -> None:
+    from virtual_orders.storage.tables import APPEND_ONLY_TABLES
+
+    neutral = {_rel(p) for p in _neutral_files()}
+    assert {
+        "virtual_orders/research/service.py", "virtual_orders/research/repository.py",
+        "virtual_orders/research/backtest.py", "virtual_orders/research/candlesticks.py",
+        "virtual_orders/readmodels/research.py",
+    } <= neutral
+    assert "virtual_orders/api/routes/research.py" in {_rel(p) for p in _api_files()}
+    # The scan is a worker job of its own, never part of the evaluator cycle (spec 20).
+    assert "virtual_orders.research.service" in _imported_modules(SRC / "virtual_orders/worker/jobs.py")
+    assert "virtual_orders.research" not in _imported_modules(SRC / "virtual_orders/evaluator/cycle.py")
+    for table in RESEARCH_TABLES:
+        assert table in APPEND_ONLY_TABLES, table
+    assert "dashboard/dashboard/views/research.py" in {_dashboard_rel(p) for p in _dashboard_files()}
+    assert (SRC / "virtual_orders/research/ml/model.py").exists()  # the classifier ships with the engine

@@ -18,6 +18,7 @@ from virtual_orders.api.routes import (
     orders,
     portfolio,
     replay,
+    research,
     signals,
     watchlist,
 )
@@ -46,4 +47,5 @@ def create_app(services: Services) -> FastAPI:
     app.include_router(portfolio.router)
     app.include_router(observability.router)
     app.include_router(observation.router)
+    app.include_router(research.router)
     return app

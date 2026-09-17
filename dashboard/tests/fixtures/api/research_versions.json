@@ -1,0 +1,39 @@
+{
+  "ambiguity_policy": "STOP_FIRST_ON_SAME_CANDLE_V1",
+  "code_version": "test-sha",
+  "engine_version": "candles-v1",
+  "feature_version": "features-v1",
+  "label_version": "labels-v1",
+  "scanned_timeframes": [
+    "15m",
+    "1h",
+    "1d"
+  ],
+  "score_interpretation": "Deterministic composite in [0, 1] of the pattern's geometry and context score, trend alignment, relative volume, the OHLCV pressure ESTIMATE and structural room. It ranks research observations against each other under one fixed rule; it is not a probability, not an expected return and not a recommendation. P(target before stop) is reported separately as ml_probability, with its own model and feature versions.",
+  "scoring_version": "scoring-v1",
+  "supported_patterns": [
+    "DOJI",
+    "DRAGONFLY_DOJI",
+    "GRAVESTONE_DOJI",
+    "HAMMER",
+    "HANGING_MAN",
+    "INVERTED_HAMMER",
+    "SHOOTING_STAR",
+    "BULLISH_ENGULFING",
+    "BEARISH_ENGULFING",
+    "PIERCING_LINE",
+    "DARK_CLOUD_COVER",
+    "MORNING_STAR",
+    "EVENING_STAR",
+    "THREE_WHITE_SOLDIERS",
+    "THREE_BLACK_CROWS"
+  ],
+  "supported_timeframes": [
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "4h",
+    "1d"
+  ]
+}

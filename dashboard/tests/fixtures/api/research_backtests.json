@@ -1,0 +1,59 @@
+{
+  "ambiguity_policy": "STOP_FIRST_ON_SAME_CANDLE_V1",
+  "backtests": [
+    {
+      "ambiguity_policy": "STOP_FIRST_ON_SAME_CANDLE_V1",
+      "ambiguous": 0,
+      "avg_mae_r": "-0.1114",
+      "avg_mfe_r": "2.0614",
+      "avg_r": "2",
+      "backtest_version": "backtest-v1",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "data_as_of": "2025-11-25T21:30:00+00:00",
+      "expectancy_r": "2",
+      "fold": null,
+      "id": 1,
+      "label_version": "labels-v1",
+      "losses": 0,
+      "max_drawdown_r": "0",
+      "pattern": "BULLISH_ENGULFING",
+      "period_from": "2025-11-25T14:30:00+00:00",
+      "period_to": "2025-11-25T21:00:00+00:00",
+      "profit_factor": null,
+      "resolved": 1,
+      "run_id": "00000000-0000-4000-8000-000000000021",
+      "samples": 1,
+      "split": "ALL",
+      "statistics": {
+        "ambiguous": 0,
+        "avg_mae_r": "-0.1114",
+        "avg_mfe_r": "2.0614",
+        "avg_r": "2",
+        "avg_return_pct": "4.9751",
+        "backtest_version": "backtest-v1",
+        "expectancy_ci": null,
+        "expectancy_r": "2",
+        "gap_through": 0,
+        "losses": 0,
+        "max_drawdown_r": "0",
+        "median_return_pct": "4.9751",
+        "profit_factor": null,
+        "resolved": 1,
+        "samples": 1,
+        "timeouts": 0,
+        "warnings": [
+          "INSUFFICIENT_SAMPLE"
+        ],
+        "win_rate": "1",
+        "win_rate_ci": null,
+        "wins": 1
+      },
+      "ticker": null,
+      "timeframe": "15m",
+      "timeouts": 0,
+      "win_rate": "1",
+      "wins": 1
+    }
+  ],
+  "label_version": "labels-v1"
+}
