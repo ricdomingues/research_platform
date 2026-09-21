@@ -68,12 +68,15 @@ from virtual_orders.research.repository import (
 )
 from virtual_orders.research.scoring import DEFAULT_WEIGHTS, ScoreWeights, score_setup
 from virtual_orders.research.setups import SetupCandidate, build_candidate
-from virtual_orders.research.timeframes import resample
+from virtual_orders.research.timeframes import resample, settled
 
 RESEARCH_PRESSURE_WINDOW_BARS = 30  # the platform's own pressure window (D44), reused rather than redefined
 RESEARCH_PRESSURE_CMF_THRESHOLD = Decimal("0.05")  # the D37/D66 convention, reused for the same reason
 DEFAULT_TIMEFRAMES = (Timeframe.M15, Timeframe.H1, Timeframe.D1)
 DEFAULT_LOOKBACK_SESSIONS = 30
+# Ingestion runs every two minutes, so a bucket's last bars can land up to about that late. Three minutes
+# gives a closed bucket one full ingestion cycle plus slack before a scan is allowed to call it final.
+DEFAULT_SETTLE_MINUTES = 3
 CALENDAR_PAD_DAYS = 10
 NO_WATCHLIST = "NO_WATCHLIST"
 NO_SESSIONS = "NO_SESSIONS"
@@ -91,6 +94,10 @@ class ScanConfig:
     prior_lookback: int = PRIOR_TREND_LOOKBACK
     patterns: tuple[str, ...] | None = None
     pressure_window_bars: int = RESEARCH_PRESSURE_WINDOW_BARS
+    # How long a closed bucket is given for its last bars to arrive before it is read as final. A bucket whose
+    # minutes have all *elapsed* is not a bucket whose bars have all *landed*: ingestion runs on its own
+    # cadence and a scan that reads across that gap sees a candle that is still changing shape.
+    settle_minutes: int = DEFAULT_SETTLE_MINUTES
 
     def __post_init__(self) -> None:
         if not self.timeframes:
@@ -99,6 +106,8 @@ class ScanConfig:
             raise ValueError("lookback_sessions must be >= 1")
         if self.pressure_window_bars < 2:
             raise ValueError("pressure_window_bars must be >= 2")
+        if self.settle_minutes < 0:
+            raise ValueError("settle_minutes must be >= 0")
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -108,6 +117,7 @@ class ScanConfig:
             "weights": self.weights.snapshot(),
             "level_policy": self.level_policy.snapshot(),
             "prior_lookback": self.prior_lookback,
+            "settle_minutes": self.settle_minutes,
             "patterns": None if self.patterns is None else list(self.patterns),
             "pressure_window_bars": self.pressure_window_bars,
             "engine_version": ENGINE_VERSION,
@@ -226,9 +236,14 @@ def _scan_one(
         series = compute_series(candles)
         pivots = swing_points(candles)
         detections = candidates = 0
+        settle = timedelta(minutes=config.settle_minutes)
         for index, candle in enumerate(candles):
             if resume is not None and candle.end_ts <= resume:
                 continue  # already scanned by this engine version: a rerun writes nothing
+            if not settled(candle, completed_through=completed_through, settle=settle):
+                # Every later candle of this series is newer, so none of them is settled either. Leaving the
+                # resume watermark where it is means this bucket is read again next scan, with its real shape.
+                break
             found = detect_at(
                 candles[: index + 1], index,
                 prior=prior_context(candles, index, lookback=config.prior_lookback),

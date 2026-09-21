@@ -22,6 +22,8 @@ from virtual_orders.research.market_structure import MarketStructure
 from virtual_orders.research.models import ZERO, Candle, PatternDirection, quantize_ratio
 
 LEVELS_VERSION = "levels-v1"
+RISK_REWARD_BELOW_MINIMUM = "RISK_REWARD_BELOW_MINIMUM"
+TARGET_BLOCKED_BY_STRUCTURE = "TARGET_BLOCKED_BY_STRUCTURE"
 PRICE_TICK = Decimal("0.01")  # US equities quote in cents; every proposed level is a real, quotable price
 
 
@@ -34,6 +36,10 @@ class LevelPolicy:
     target1_atr: Decimal = Decimal("2")
     target2_atr: Decimal = Decimal("3")
     min_risk_reward: Decimal = Decimal("1.5")
+    # The least distance a structure-capped target1 may still leave between entry and the level. Below it the
+    # path to any realistic objective is blocked and the setup is rejected as such, instead of being handed a
+    # target worth cents and rejected on a reward-to-risk that only looks like the problem.
+    min_target_atr: Decimal = Decimal("1")
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -44,6 +50,8 @@ class LevelPolicy:
                 raise ValueError(f"{item.name} must be positive")
         if self.target2_atr <= self.target1_atr:
             raise ValueError("target2_atr must be beyond target1_atr")
+        if self.min_target_atr > self.target1_atr:
+            raise ValueError("min_target_atr must not exceed target1_atr")
 
     def snapshot(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
@@ -114,7 +122,9 @@ def propose_levels(
     * the stop sits `stop_buffer_atr` x ATR below the pattern's low, and below the nearest confirmed support
       when one exists — the level that would invalidate the read, not a round number;
     * target1 is `target1_atr` x ATR above the entry, pulled back to the nearest confirmed resistance when that
-      resistance sits in front of it, because the first realistic objective is where supply already showed;
+      resistance sits in front of it, because the first realistic objective is where supply already showed —
+      unless that resistance sits closer than `min_target_atr` x ATR, in which case there is no room to the
+      first objective at all and the chain is rejected with `TARGET_BLOCKED_BY_STRUCTURE`;
     * target2 extends to `target2_atr` x ATR and is dropped when it would not clear target1.
 
     Every price is quantized to a real tick and the whole chain is then validated by the platform's own rule.
@@ -133,6 +143,7 @@ def propose_levels(
 
     capping_level: Decimal | None = None  # the confirmed level that pulled target1 back, whichever side
     widening_level: Decimal | None = None  # the confirmed level that pushed the stop out, whichever side
+    blocked = False  # the capping level sits so close to entry that no realistic objective remains
     with localcontext(CANONICAL_CONTEXT):
         zone_width = atr * policy.entry_zone_atr
         buffer = atr * policy.stop_buffer_atr
@@ -146,6 +157,7 @@ def propose_levels(
                     stop, widening_level = widened, structure.support
             target1 = entry_high + atr * policy.target1_atr
             if structure.resistance is not None and entry_high < structure.resistance < target1:
+                blocked = structure.resistance - entry_high < atr * policy.min_target_atr
                 target1, capping_level = structure.resistance, structure.resistance
             target2 = entry_high + atr * policy.target2_atr
         else:
@@ -158,6 +170,7 @@ def propose_levels(
                     stop, widening_level = widened, structure.resistance
             target1 = entry_low - atr * policy.target1_atr
             if structure.support is not None and target1 < structure.support < entry_low:
+                blocked = entry_low - structure.support < atr * policy.min_target_atr
                 target1, capping_level = structure.support, structure.support
             target2 = entry_low - atr * policy.target2_atr
 
@@ -183,8 +196,13 @@ def propose_levels(
         spec_errors = tuple(validate_signal(spec))
 
     reward = _risk_reward(reference, stop, target1)
-    if reward is not None and reward < policy.min_risk_reward:
-        spec_errors = (*spec_errors, "RISK_REWARD_BELOW_MINIMUM")
+    if blocked:
+        # Rejected for what is actually wrong. Reporting a reward-to-risk here would name the symptom and
+        # hide the cause: no reward-to-risk floor rescues a target four cents from entry, and lowering the
+        # floor to admit one would admit every other setup whose objective is a rounding error too.
+        spec_errors = (*spec_errors, TARGET_BLOCKED_BY_STRUCTURE)
+    elif reward is not None and reward < policy.min_risk_reward:
+        spec_errors = (*spec_errors, RISK_REWARD_BELOW_MINIMUM)
     return RiskLevels(
         levels_version=LEVELS_VERSION,
         policy=policy.snapshot(),
@@ -205,6 +223,7 @@ def propose_levels(
             # `false` however hard structure had moved its prices, and the clamp that decides reward was
             # invisible in the stored evidence. Recording which level acted, not merely that one did.
             "target1_capped_by_structure": capping_level is not None,
+            "target1_blocked_by_structure": blocked,
             "capping_level": None if capping_level is None else to_tick(capping_level),
             "stop_widened_by_structure": widening_level is not None,
             "widening_level": None if widening_level is None else to_tick(widening_level),

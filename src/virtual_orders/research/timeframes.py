@@ -20,7 +20,7 @@ Conventions, all of them tested:
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 
 from core.domain.calendar import ONE_MINUTE, Session, SessionCalendar
@@ -119,6 +119,27 @@ def last_completed_minute(calendar: SessionCalendar, now: datetime) -> datetime 
         return calendar.last_expected_minute_before(now)
     except LookupError:
         return None
+
+
+def settled(candle: Candle, *, completed_through: datetime, settle: timedelta) -> bool:
+    """Whether this candle may be read as final, or is still waiting for bars that have not arrived.
+
+    A bucket is emitted by `resample` once its last expected minute has *elapsed*, which is not the same as
+    every bar of it having been *ingested*: the watchlist ingests on its own cadence, so a scan reading a
+    just-closed bucket sees a candle whose close is still moving. During the canary this was not theoretical
+    — 7 of 14 candidates were built on candles that all changed once their bars landed, and one pattern
+    (a SHOOTING_STAR, the session's highest-scoring detection) ceased to exist against the corrected close.
+    The damage outlived the correction, because a detection advances `last_detection_end_ts` past its own
+    candle and the bucket is then never re-read.
+
+    A candle with every expected minute present is final whenever it closed. One still missing minutes is
+    given `settle` past its close for them to arrive; beyond that the minutes are genuinely absent rather
+    than late — an illiquid minute with no trade never gets a bar — and the candle is read as it stands,
+    with `minutes_present` recording what it was built from.
+    """
+    if candle.complete:
+        return True
+    return bool(candle.end_ts + ONE_MINUTE + settle <= completed_through)
 
 
 def iter_completed(candles: Sequence[Candle]) -> Iterator[Candle]:

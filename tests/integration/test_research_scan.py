@@ -111,6 +111,39 @@ def test_the_scan_reads_stored_bars_and_records_what_it_finds(engine):
     assert run["kind"] == "RESEARCH_SCAN"
 
 
+def seed_partial(engine, ticker="AAPL", missing=4):
+    """A session whose final minutes have not been ingested yet, exactly as a live scan meets one."""
+    bars = marching_bars(ticker)[:-missing]
+    backdated_batch(engine, ticker, bars, ingested_at=INGESTED_AT)
+    with engine.begin() as conn:
+        add_ticker(conn, ticker, added_at=et(DAY, "09:00"))
+
+
+def test_the_scan_leaves_a_candle_whose_bars_are_still_arriving_for_the_next_run(engine):
+    """A candle is read when its bars have landed, not merely when its minutes have elapsed.
+
+    Live during the canary the scan read buckets whose last bars were still in flight behind the two-minute
+    ingestion cadence: 7 of 14 candidates were built on candles that all changed once the bars landed, and
+    the highest-scoring detection of the session did not survive its own corrected close. Worse, a detection
+    advances `last_detection_end_ts` past its candle, so the bad row was frozen and never re-examined.
+    """
+    seed_partial(engine)
+    in_flight = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                                  market_now=et(DAY, "16:01"), config=CONFIG)
+    with engine.connect() as conn:
+        held_back = conn.execute(select(func.max(tables.pattern_detections.c.end_ts))).scalar_one()
+    # The last bucket closed at 15:59 and is missing minutes; three minutes of settle have not passed.
+    assert held_back is None or held_back < et(DAY, "15:45")
+
+    settled_scan = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                                     market_now=et(DAY, "16:05"), config=CONFIG)
+    with engine.connect() as conn:
+        now_read = conn.execute(select(func.max(tables.pattern_detections.c.end_ts))).scalar_one()
+    assert settled_scan.detections > 0  # the same bucket, read once its bars had their chance to arrive
+    assert now_read > (held_back or et(DAY, "09:30"))
+    assert in_flight.failures == {} and settled_scan.failures == {}
+
+
 def test_running_the_same_scan_again_creates_no_duplicate_observations(engine):
     seed(engine)
     first = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,

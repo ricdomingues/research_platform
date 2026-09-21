@@ -16,7 +16,15 @@ from virtual_orders.evaluator.signals import parse_signal_body
 from virtual_orders.research.backtest import BacktestStats, build_occurrences, summarize
 from virtual_orders.research.candlesticks import ENGINE_VERSION
 from virtual_orders.research.indicators import compute_series
-from virtual_orders.research.levels import DEFAULT_POLICY, LevelPolicy, RiskLevels, propose_levels, to_tick
+from virtual_orders.research.levels import (
+    DEFAULT_POLICY,
+    RISK_REWARD_BELOW_MINIMUM,
+    TARGET_BLOCKED_BY_STRUCTURE,
+    LevelPolicy,
+    RiskLevels,
+    propose_levels,
+    to_tick,
+)
 from virtual_orders.research.market_structure import (
     BreakoutState,
     GapState,
@@ -225,21 +233,47 @@ def test_a_chain_structure_never_touched_records_neither_a_cap_nor_a_widening(di
     assert levels.basis["widening_level"] is None
 
 
-def test_a_level_within_cents_of_entry_collapses_the_reward_it_caps():
-    """The observed shape of the funnel's dominant rejection, pinned rather than fixed.
+@pytest.mark.parametrize("direction,pattern,level,entry", [
+    (PatternDirection.BEARISH, SHORT_PATTERN, {"support": D("99.96")}, D(100)),
+    (PatternDirection.BULLISH, LONG_PATTERN, {"resistance": D("105.04")}, D(105)),
+])
+def test_a_level_within_cents_of_entry_blocks_the_setup_instead_of_becoming_its_target(
+    direction, pattern, level, entry
+):
+    """The funnel's dominant rejection, named for what is actually wrong with it.
 
-    A confirmed level sitting just in front of entry pulls target1 onto itself, and reward becomes the
-    distance to that level however small it is. Here support is 4 cents below entry against a 7.50 risk, so
-    the chain is rejected on R:R while every individual price remains correct. Lowering `min_risk_reward`
-    does not rescue this; the open question is whether such a level should cap the target or disqualify the
-    setup outright, and until that is decided the behaviour is recorded, not changed.
+    A confirmed level sitting just in front of entry used to pull target1 onto itself, so reward became the
+    distance to that level however small — four cents against 7.50 of risk in the worst case observed live,
+    reported as RISK_REWARD_BELOW_MINIMUM as though the floor were the problem. No floor rescues four cents.
+    A level closer than `min_target_atr` x ATR means the path to a first objective is blocked, and that is
+    the reason the chain now carries.
     """
-    levels = propose_levels(SHORT_PATTERN, direction=PatternDirection.BEARISH, atr=D(2),
-                            structure=structure_with(support=D("99.96")))
-    assert levels.target1 == to_tick(D("99.96"))
+    levels = propose_levels(pattern, direction=direction, atr=D(2), structure=structure_with(**level))
+    (blocking,) = level.values()
+    assert levels.target1 == to_tick(blocking)  # what blocked it is still recorded, at its real price
     assert levels.basis["target1_capped_by_structure"] is True
-    assert levels.risk_reward is not None and levels.risk_reward < D("0.01")
-    assert levels.valid is False and "RISK_REWARD_BELOW_MINIMUM" in levels.errors
+    assert levels.basis["target1_blocked_by_structure"] is True
+    assert levels.valid is False
+    assert levels.errors == (TARGET_BLOCKED_BY_STRUCTURE,)
+    assert RISK_REWARD_BELOW_MINIMUM not in levels.errors  # the symptom never stands in for the cause
+    assert abs(levels.target1 - entry) < D(2) * DEFAULT_POLICY.min_target_atr
+
+
+def test_a_level_with_genuine_room_still_caps_the_target_and_is_judged_on_reward():
+    """The clamp is not the defect and is not removed: structure still decides where the first objective is."""
+    levels = propose_levels(SHORT_PATTERN, direction=PatternDirection.BEARISH, atr=D(2),
+                            structure=structure_with(support=D(97)))
+    assert levels.target1 == to_tick(D(97))
+    assert levels.basis["target1_capped_by_structure"] is True
+    assert levels.basis["target1_blocked_by_structure"] is False
+    # 3.00 of reward against 6.50 of risk: a real objective, honestly short of the reward-to-risk floor.
+    assert levels.risk_reward == D("0.4615")
+    assert levels.errors == (RISK_REWARD_BELOW_MINIMUM,)
+
+
+def test_a_target_floor_beyond_the_target_itself_is_refused():
+    with pytest.raises(ValueError, match="min_target_atr must not exceed target1_atr"):
+        LevelPolicy(target1_atr=D(2), min_target_atr=D(3))
 
 
 # --- candidates --------------------------------------------------------------------------------------------

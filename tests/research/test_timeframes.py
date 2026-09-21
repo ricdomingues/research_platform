@@ -10,7 +10,13 @@ import pytest
 
 from tests.support import D, bar, et, make_calendar
 from virtual_orders.research.models import Timeframe, bucket_minutes
-from virtual_orders.research.timeframes import iter_completed, resample, session_buckets, sessions_in_window
+from virtual_orders.research.timeframes import (
+    iter_completed,
+    resample,
+    session_buckets,
+    sessions_in_window,
+    settled,
+)
 
 CALENDAR = make_calendar()
 FULL = next(item for item in CALENDAR.sessions if item.day.isoformat() == "2025-11-25")
@@ -129,6 +135,46 @@ def test_session_buckets_and_window_helpers():
     assert bucket_minutes(Timeframe.D1) is None and bucket_minutes(Timeframe.H4) == 240
     window = sessions_in_window(CALENDAR, FULL.open_utc, HALF.close_utc)
     assert [item.day.isoformat() for item in window] == ["2025-11-25", "2025-11-26", "2025-11-28"]
+
+
+SETTLE = timedelta(minutes=3)
+
+
+def bucket_missing_its_last_minutes(missing=3):
+    """The first 15m candle of the session with its final minutes withheld, as a scan sees them in flight."""
+    minutes = minutes_of(FULL)[:15]
+    kept = [bar(minute, 100, 101, 99, 100) for minute in minutes[:-missing]]
+    (candle,) = candles(kept, Timeframe.M15, through=minutes[14] + timedelta(minutes=1))
+    assert candle.minutes_present == 15 - missing and candle.complete is False
+    return candle
+
+
+def test_a_candle_with_every_minute_present_is_final_the_moment_it_closes():
+    (candle,) = candles(flat_bars(FULL), Timeframe.M15, through=minutes_of(FULL)[14] + timedelta(minutes=1))[:1]
+    assert candle.complete is True
+    assert settled(candle, completed_through=candle.end_ts + timedelta(minutes=1), settle=SETTLE) is True
+
+
+def test_a_candle_still_missing_minutes_is_not_read_until_its_bars_have_had_time_to_arrive():
+    """The defect this rule exists for: elapsed is not the same as ingested.
+
+    `resample` emits a bucket once its last minute has elapsed, but ingestion runs on its own cadence, so a
+    scan reading a just-closed bucket sees a candle whose close is still moving. Live, 7 of 14 candidates
+    were built this way and all 7 changed once their bars landed — one pattern ceased to exist entirely.
+    """
+    candle = bucket_missing_its_last_minutes()
+    closed = candle.end_ts + timedelta(minutes=1)
+    assert settled(candle, completed_through=closed, settle=SETTLE) is False
+    assert settled(candle, completed_through=closed + timedelta(minutes=2), settle=SETTLE) is False
+    # Past the settle window the minutes are absent rather than late, and the candle is read as it stands.
+    assert settled(candle, completed_through=closed + SETTLE, settle=SETTLE) is True
+
+
+def test_without_a_settle_window_an_incomplete_candle_is_read_as_soon_as_it_closes():
+    """`settle_minutes=0` restores the old behaviour exactly, so the rule is a policy and not a hidden change."""
+    candle = bucket_missing_its_last_minutes()
+    assert settled(candle, completed_through=candle.end_ts + timedelta(minutes=1),
+                   settle=timedelta(0)) is True
 
 
 def test_naive_instants_are_refused():
