@@ -29,6 +29,7 @@ from virtual_orders.research.ml.registry import (
 )
 from virtual_orders.research.ml.training import train_dataset
 from virtual_orders.research.models import Timeframe
+from virtual_orders.research.promotion import NO_LEVELS
 from virtual_orders.research.repository import (
     ResearchRunKind,
     ResearchRunStatus,
@@ -91,6 +92,32 @@ def test_a_repeated_scan_at_the_same_watermark_inserts_nothing_new(engine):
     assert count(engine, "pattern_detections") == 1
     assert count(engine, "setup_candidates") == 1
     assert count(engine, "research_runs") == 2  # both runs are recorded; only the observations are deduplicated
+
+
+def test_a_candidate_with_no_level_chain_records_why(engine):
+    """A rejection without a reason is not a rejection anyone can audit.
+
+    When ATR has no causal window yet, `service.py` leaves `levels=None` and the row stored `levels_valid`
+    false with an EMPTY `levels_errors`. `promotion.py` knows the code — NO_LEVELS — but it never reached the
+    fact table, so the reason was only reconstructible by re-deriving the candidate.
+    """
+    occurrence = one_detection()
+    chainless = build_candidate(
+        ticker="AAPL", detection=occurrence.detection, snapshot=occurrence.features,
+        score=score_setup(occurrence.detection, occurrence.features, Direction.LONG), data_as_of=DATA_AS_OF,
+        levels=None,
+    )
+    with engine.begin() as conn:
+        run = open_run(conn)
+        detection_id, _ = record_detection(conn, run_id=run.run_id, ticker="AAPL", price_source="fake_feed",
+                                           detection=occurrence.detection, data_as_of=DATA_AS_OF)
+        candidate_id, _ = record_candidate(conn, run_id=run.run_id, detection_id=detection_id,
+                                           candidate=chainless)
+        row = conn.execute(select(tables.setup_candidates).where(
+            tables.setup_candidates.c.id == candidate_id
+        )).mappings().one()
+    assert row["levels_valid"] is False
+    assert row["levels_errors"] == [NO_LEVELS]
 
 
 def test_a_corrected_reading_is_stored_beside_the_original(engine):

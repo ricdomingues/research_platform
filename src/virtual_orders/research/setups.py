@@ -70,14 +70,21 @@ class SetupCandidate:
 
     @property
     def client_signal_id(self) -> str:
-        """`strategy-version:ticker:timeframe:pattern_end_ts` — stable across scans of the same occurrence.
+        """`strategy-version:ticker:timeframe:pattern:direction:pattern_end_ts` — one id per occurrence.
+
+        `pattern` and `direction` belong in the id because one bar can satisfy more than one detector: the
+        canary produced BEARISH_ENGULFING and EVENING_STAR on the same AAPL 1h candle. Without them every
+        detection on that bar shares a single id, and the intake contract's uniqueness on `client_signal_id`
+        keeps whichever arrived first. For two same-direction readings that collapse is defensible; for two
+        families disagreeing on direction it means the surviving side is chosen by iteration order rather
+        than by any rule, which is not a decision this layer is allowed to make silently.
 
         The scan's `data_as_of` is deliberately **not** part of the id, though it is recorded in the payload:
         every scan takes a fresh watermark, so folding it in would mint a new signal for the same pattern on
         every run and defeat the idempotency the intake contract depends on (spec 3.3).
         """
         return (f"{self.strategy}-{self.strategy_version}:{self.ticker}:{self.timeframe.value}:"
-                f"{self.detected_at.isoformat()}")
+                f"{self.pattern}:{self.direction.value}:{self.detected_at.isoformat()}")
 
     @property
     def candidate_key(self) -> str:

@@ -32,6 +32,7 @@ from core.domain.hashing import sha256_hex
 from virtual_orders.research.backtest import BacktestStats
 from virtual_orders.research.labels import AMBIGUITY_POLICY, LABEL_VERSION
 from virtual_orders.research.models import PatternDetection, Timeframe
+from virtual_orders.research.promotion import NO_LEVELS
 from virtual_orders.research.setups import SetupCandidate
 from virtual_orders.storage.codec import to_document
 from virtual_orders.storage.tables import (
@@ -198,7 +199,10 @@ def record_candidate(
         "target2": None if levels is None else levels.target2,
         "risk_reward": None if levels is None else levels.risk_reward,
         "levels_valid": bool(levels is not None and levels.valid),
-        "levels_errors": list(() if levels is None else levels.errors),
+        # A candidate with no level chain at all is rejected for a reason, and the reason is the row's job to
+        # carry. Storing an empty list here made those rejections reasonless in the fact table: `promotion.py`
+        # knows the candidate failed on NO_LEVELS, but nothing that reads `setup_candidates` ever saw it.
+        "levels_errors": [NO_LEVELS] if levels is None else list(levels.errors),
         "client_signal_id": candidate.client_signal_id, "candidate_hash": candidate.candidate_hash,
         "data_as_of": candidate.data_as_of,
     }

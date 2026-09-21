@@ -131,6 +131,8 @@ def propose_levels(
     low = min(candle.low for candle in pattern_candles)
     close = pattern_candles[-1].close
 
+    capping_level: Decimal | None = None  # the confirmed level that pulled target1 back, whichever side
+    widening_level: Decimal | None = None  # the confirmed level that pushed the stop out, whichever side
     with localcontext(CANONICAL_CONTEXT):
         zone_width = atr * policy.entry_zone_atr
         buffer = atr * policy.stop_buffer_atr
@@ -139,20 +141,24 @@ def propose_levels(
             entry_low = min(close, high - zone_width)
             stop = low - buffer
             if structure.support is not None and structure.support < low:
-                stop = min(stop, structure.support - buffer)
+                widened = min(stop, structure.support - buffer)
+                if widened < stop:
+                    stop, widening_level = widened, structure.support
             target1 = entry_high + atr * policy.target1_atr
             if structure.resistance is not None and entry_high < structure.resistance < target1:
-                target1 = structure.resistance
+                target1, capping_level = structure.resistance, structure.resistance
             target2 = entry_high + atr * policy.target2_atr
         else:
             entry_low = low
             entry_high = max(close, low + zone_width)
             stop = high + buffer
             if structure.resistance is not None and structure.resistance > high:
-                stop = max(stop, structure.resistance + buffer)
+                widened = max(stop, structure.resistance + buffer)
+                if widened > stop:
+                    stop, widening_level = widened, structure.resistance
             target1 = entry_low - atr * policy.target1_atr
             if structure.support is not None and target1 < structure.support < entry_low:
-                target1 = structure.support
+                target1, capping_level = structure.support, structure.support
             target2 = entry_low - atr * policy.target2_atr
 
     entry_low, entry_high = to_tick(entry_low), to_tick(entry_high)
@@ -193,8 +199,15 @@ def propose_levels(
         basis={
             "pattern_high": high, "pattern_low": low, "pattern_close": close, "atr": atr,
             "support": structure.support, "resistance": structure.resistance,
-            "resistance_capped_target1": structure.resistance is not None and target1 == to_tick(structure.resistance),
-            "support_widened_stop": structure.support is not None and long and structure.support < low,
+            # Side-neutral by construction. The previous names ("resistance_capped_target1",
+            # "support_widened_stop") described only the long side and were structurally unrecordable on the
+            # short one, where support caps target1 and resistance widens the stop — so every short recorded
+            # `false` however hard structure had moved its prices, and the clamp that decides reward was
+            # invisible in the stored evidence. Recording which level acted, not merely that one did.
+            "target1_capped_by_structure": capping_level is not None,
+            "capping_level": None if capping_level is None else to_tick(capping_level),
+            "stop_widened_by_structure": widening_level is not None,
+            "widening_level": None if widening_level is None else to_tick(widening_level),
             "context_version": structure.context_version,
         },
         valid=not spec_errors,

@@ -11,14 +11,20 @@ import pytest
 
 from core.domain.models import Direction
 from core.domain.validation import validate_signal
-from tests.research.support import BASE, D, bullish_engulfing_after_decline, zigzag
+from tests.research.support import BASE, D, bullish_engulfing_after_decline, candle, zigzag
 from virtual_orders.evaluator.signals import parse_signal_body
 from virtual_orders.research.backtest import BacktestStats, build_occurrences, summarize
 from virtual_orders.research.candlesticks import ENGINE_VERSION
 from virtual_orders.research.indicators import compute_series
 from virtual_orders.research.levels import DEFAULT_POLICY, LevelPolicy, RiskLevels, propose_levels, to_tick
-from virtual_orders.research.market_structure import structure_at, swing_points
-from virtual_orders.research.models import PatternDirection
+from virtual_orders.research.market_structure import (
+    BreakoutState,
+    GapState,
+    MarketStructure,
+    structure_at,
+    swing_points,
+)
+from virtual_orders.research.models import PatternDirection, TrendState
 from virtual_orders.research.promotion import (
     EXPECTANCY_BELOW_MINIMUM,
     INSUFFICIENT_BACKTEST_SAMPLES,
@@ -157,6 +163,85 @@ def test_level_inputs_are_validated():
         LevelPolicy(target1_atr=D(0))
 
 
+def structure_with(support=None, resistance=None):
+    """A structure whose only meaningful content is the two confirmed levels the clamp actually reads."""
+    return MarketStructure(
+        context_version="context-v1", short_term_trend=TrendState.SIDEWAYS,
+        medium_term_trend=TrendState.SIDEWAYS, ema20_slope_pct=None, support=support, resistance=resistance,
+        support_distance_pct=None, resistance_distance_pct=None, breakout=BreakoutState.INSIDE,
+        relative_atr_pct=None, gap=GapState.NONE, gap_pct=None, swings_confirmed=2, swing_left=2,
+        swing_right=2,
+    )
+
+
+LONG_PATTERN = [candle(0, 100, 101, 99, 99.5), candle(1, 99.5, 105, 99, 104.5)]
+SHORT_PATTERN = [candle(0, 105, 106, 104, 104.5), candle(1, 104.5, 105, 100, 100.5)]
+
+
+def test_a_long_records_the_resistance_that_capped_it_and_the_support_that_widened_its_stop():
+    levels = propose_levels(LONG_PATTERN, direction=PatternDirection.BULLISH, atr=D(2),
+                            structure=structure_with(support=D(97), resistance=D(107)))
+    assert levels.direction is Direction.LONG
+    # target1 would have been 105 + 2xATR = 109; resistance sits in front of it.
+    assert levels.target1 == to_tick(D(107))
+    assert levels.basis["target1_capped_by_structure"] is True
+    assert levels.basis["capping_level"] == to_tick(D(107))
+    # the stop would have been 99 - 0.25xATR = 98.50; support pushes it below 97 instead.
+    assert levels.stop == to_tick(D("96.5"))
+    assert levels.basis["stop_widened_by_structure"] is True
+    assert levels.basis["widening_level"] == to_tick(D(97))
+
+
+def test_a_short_records_the_support_that_capped_it_and_the_resistance_that_widened_its_stop():
+    """The mirror of the long case, and the one that was structurally unrecordable.
+
+    Both flags used to be long-side by construction — `resistance_capped_target1` compared target1 against
+    resistance, and `support_widened_stop` was hard-coded `and long` — so a short recorded `false` however
+    hard structure had moved its prices. The clamp that decides reward was invisible in the stored evidence
+    for exactly half the candidates.
+    """
+    levels = propose_levels(SHORT_PATTERN, direction=PatternDirection.BEARISH, atr=D(2),
+                            structure=structure_with(support=D(98), resistance=D(107)))
+    assert levels.direction is Direction.SHORT
+    # target1 would have been 100 - 2xATR = 96; support sits in front of it.
+    assert levels.target1 == to_tick(D(98))
+    assert levels.basis["target1_capped_by_structure"] is True
+    assert levels.basis["capping_level"] == to_tick(D(98))
+    # the stop would have been 106 + 0.25xATR = 106.50; resistance pushes it above 107 instead.
+    assert levels.stop == to_tick(D("107.5"))
+    assert levels.basis["stop_widened_by_structure"] is True
+    assert levels.basis["widening_level"] == to_tick(D(107))
+
+
+@pytest.mark.parametrize("direction,pattern", [
+    (PatternDirection.BULLISH, LONG_PATTERN),
+    (PatternDirection.BEARISH, SHORT_PATTERN),
+])
+def test_a_chain_structure_never_touched_records_neither_a_cap_nor_a_widening(direction, pattern):
+    levels = propose_levels(pattern, direction=direction, atr=D(2), structure=structure_with())
+    assert levels.basis["target1_capped_by_structure"] is False
+    assert levels.basis["capping_level"] is None
+    assert levels.basis["stop_widened_by_structure"] is False
+    assert levels.basis["widening_level"] is None
+
+
+def test_a_level_within_cents_of_entry_collapses_the_reward_it_caps():
+    """The observed shape of the funnel's dominant rejection, pinned rather than fixed.
+
+    A confirmed level sitting just in front of entry pulls target1 onto itself, and reward becomes the
+    distance to that level however small it is. Here support is 4 cents below entry against a 7.50 risk, so
+    the chain is rejected on R:R while every individual price remains correct. Lowering `min_risk_reward`
+    does not rescue this; the open question is whether such a level should cap the target or disqualify the
+    setup outright, and until that is decided the behaviour is recorded, not changed.
+    """
+    levels = propose_levels(SHORT_PATTERN, direction=PatternDirection.BEARISH, atr=D(2),
+                            structure=structure_with(support=D("99.96")))
+    assert levels.target1 == to_tick(D("99.96"))
+    assert levels.basis["target1_capped_by_structure"] is True
+    assert levels.risk_reward is not None and levels.risk_reward < D("0.01")
+    assert levels.valid is False and "RISK_REWARD_BELOW_MINIMUM" in levels.errors
+
+
 # --- candidates --------------------------------------------------------------------------------------------
 def test_a_candidate_is_identified_the_same_way_on_every_rescan():
     first = candidate()
@@ -177,6 +262,25 @@ def test_a_different_reading_of_the_same_candle_is_a_different_candidate_hash():
     altered = replace(first, deterministic_score=D("0.99"))
     assert altered.candidate_hash != first.candidate_hash
     assert altered.client_signal_id == first.client_signal_id  # same occurrence, different reading
+
+
+def test_two_patterns_detected_on_one_bar_never_share_a_client_signal_id():
+    """One bar can satisfy several detectors, and the id has to separate them.
+
+    Live during the canary, BEARISH_ENGULFING and EVENING_STAR fired on the same AAPL 1h candle. The id used
+    to be `strategy-version:ticker:timeframe:detected_at`, so both rows carried it identically — and because
+    `signals.client_signal_id` is UNIQUE, intake would keep whichever was promoted first and drop the rest.
+    For two same-direction readings that is arguably right; for two families disagreeing on direction it
+    picks a side by iteration order. `candidate_key` already separated them; the id now agrees with it.
+    """
+    bullish = candidate()
+    opposite = replace(bullish, pattern="EVENING_STAR", direction=Direction.SHORT)
+    same_side = replace(bullish, pattern="THREE_WHITE_SOLDIERS")
+    assert bullish.detected_at == opposite.detected_at == same_side.detected_at
+    ids = {bullish.client_signal_id, opposite.client_signal_id, same_side.client_signal_id}
+    assert len(ids) == 3
+    keys = {bullish.candidate_key, opposite.candidate_key, same_side.candidate_key}
+    assert len(keys) == 3  # the id and the research key now separate the same occurrences
 
 
 def test_a_neutral_pattern_never_becomes_a_candidate():
