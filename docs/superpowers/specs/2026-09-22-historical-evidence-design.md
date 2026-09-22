@@ -451,6 +451,11 @@ VPS diferente. Foram produzidas por uma falha genuína e valem mais que qualquer
 - **Denominadores**: nenhuma superfície exibe taxa sem `resolved`; abaixo do mínimo, o estado é exibido em vez do
   número; frequência observada e probabilidade calibrada nunca ocupam o mesmo campo.
 - **Incerteza**: nenhum intervalo é produzido enquanto a metodologia não estiver aprovada e versionada.
+- **Ajuste (D101)**: um padrão em torno de um split conhecido é medido sobre a série ajustada e não sobre a
+  raw; um provento em dinheiro **não** altera nenhum OHLC técnico; `research_bars` permanece raw sob os dois.
+- **Reprodutibilidade (D102)**: uma coorte fixada a uma `dataset_revision_id` produz o mesmo número depois que
+  uma revisão posterior corrige barras, e a mesma coorte na revisão nova produz um número diferente — a
+  diferença é atribuível a dados, não a regra.
 - **Não agrupamento**: coortes com base, universo, feed, revisão ou versões diferentes não se misturam.
 - **Cobertura**: um instrumento abaixo do portão não entra no universo estatístico, e o viés de disponibilidade
   fica registrado no dataset.
