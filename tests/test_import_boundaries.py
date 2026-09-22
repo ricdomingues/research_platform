@@ -59,6 +59,7 @@ PLATFORM_PURE_MODULES = [
     "virtual_orders/research/labels.py", "virtual_orders/research/levels.py",
     "virtual_orders/research/scoring.py", "virtual_orders/research/setups.py",
     "virtual_orders/research/backtest.py", "virtual_orders/research/promotion.py",
+    "virtual_orders/research/reconcile.py",
     "virtual_orders/research/ml/dataset.py", "virtual_orders/research/ml/model.py",
     "virtual_orders/research/ml/training.py", "virtual_orders/research/ml/inference.py",
 ]

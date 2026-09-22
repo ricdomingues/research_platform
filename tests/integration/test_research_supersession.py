@@ -1,4 +1,4 @@
-"""Supersession schema and its append-only guarantees (Plan 6, D96, D102)."""
+"""Supersession schema, its append-only guarantees, and the scan that writes it (Plan 6, D96, D102)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import Engine, text
 
-from tests.integration.support import count
+from tests.integration.support import DAY, PRICE_SOURCE, backdated_batch, count
+from tests.integration.test_research_scan import (
+    CONFIG,
+    MARKET_NOW,
+    correct_one_minute,
+    marching_bars,
+    seed,
+)
+from tests.support import et
+from virtual_orders.marketdata.sources import RawBar
 from virtual_orders.research.datasets import (
     ensure_dataset,
     open_revision,
@@ -20,11 +29,13 @@ from virtual_orders.research.models import Timeframe
 from virtual_orders.research.repository import (
     FACT_PATTERN_DETECTION,
     NO_LONGER_DETECTED,
+    SUPERSEDED_BY_REVISION,
     ResearchRunKind,
     active_detections,
     record_supersession,
     start_run,
 )
+from virtual_orders.research.service import run_research_scan
 from virtual_orders.storage import tables
 
 DETECTION_END_TS = datetime(2026, 9, 22, 16, 0, tzinfo=UTC)
@@ -234,3 +245,103 @@ def test_recording_the_same_supersession_twice_is_idempotent(engine):
     with engine.begin() as conn:
         assert record_supersession(conn, **arguments) is False
     assert count(engine, "research_supersessions") == 1
+
+
+# --- The scan's own reconciliation, end to end over real Postgres (Plan 6, D96) ---------------------------
+#
+# Both cases of D96 in one scan, because they are two different claims about a correction and each has its own
+# way of being wrong. Case A is a corrected candle that still reads as the same pattern, so the stale row is
+# superseded *by* a named replacement; case B is a corrected candle that no longer reads as anything, so the
+# stale row is retracted with nothing to point at. Only case B had coverage before this test.
+
+# The 15-minute bucket whose own minutes carry each correction. Minute 239 closes the bucket ending 13:29 ET
+# and minute 269 the bucket ending 13:59 ET; a correction anywhere inside a bucket changes that bucket's
+# input identity, which is what makes the scan look at its stored readings again.
+CASE_A_MINUTE = 239
+CASE_B_MINUTE = 269
+
+
+def reverse_one_minute(engine, ticker="AAPL", minute_index=CASE_B_MINUTE, drop="1.00"):
+    """A vendor correction that turns a rising minute into a sharp fall.
+
+    The bucket it closes was a bullish candle marching with its two neighbours — a Three White Soldiers by the
+    engine's own rule. Corrected, the bucket closes below its own open, so that reading is simply gone: the
+    stored fact has no successor, which is exactly case B of D96.
+    """
+    original = marching_bars(ticker)[minute_index]
+    close = original.close - Decimal(drop)
+    corrected = RawBar(
+        ticker, original.ts, original.open, max(original.open, original.high),
+        close - Decimal("0.01"), close, original.volume,
+    )
+    backdated_batch(engine, ticker, [corrected], ingested_at=et(DAY, "16:40"))
+
+
+def supersession_rows(engine) -> list[dict]:
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(text(
+            "SELECT s.reason, s.superseded_fact_id, s.replacement_fact_id,"
+            "       stale.pattern AS stale_pattern, stale.end_ts AS stale_end_ts,"
+            "       fresh.pattern AS fresh_pattern, fresh.end_ts AS fresh_end_ts,"
+            "       fresh.evidence_hash AS fresh_evidence_hash"
+            " FROM research_supersessions s"
+            " JOIN pattern_detections stale ON stale.id = s.superseded_fact_id"
+            " LEFT JOIN pattern_detections fresh ON fresh.id = s.replacement_fact_id"
+            " ORDER BY s.id"
+        )).mappings()]
+
+
+def test_a_correction_supersedes_the_reading_it_invalidates(engine):
+    """The whole point of D96, end to end over real Postgres: both cases, told apart by the rows themselves."""
+    seed(engine)
+    first = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                              market_now=MARKET_NOW, config=CONFIG)
+    assert first.detections > 0
+    assert first.supersessions == 0  # nothing was stored before it, so there is nothing to reconcile against
+    stored_before = count(engine, "pattern_detections")
+
+    correct_one_minute(engine, minute_index=CASE_A_MINUTE)   # case A: the same pattern, read differently
+    reverse_one_minute(engine)                               # case B: the pattern is gone
+    second = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                               market_now=et(DAY, "16:45"), config=CONFIG)
+
+    assert second.supersessions >= 2
+    assert count(engine, "pattern_detections") >= stored_before  # nothing was deleted or rewritten
+    rows = supersession_rows(engine)
+    assert len(rows) == second.supersessions
+
+    replaced = [row for row in rows if row["reason"] == SUPERSEDED_BY_REVISION]
+    retracted = [row for row in rows if row["reason"] == NO_LONGER_DETECTED]
+    assert replaced, "case A never happened: a corrected candle that still reads as its pattern"
+    assert retracted, "case B never happened: a corrected candle that reads as nothing"
+
+    for row in replaced:
+        # The replacement must be a real, distinct detection of the same claim at the same bucket. A link that
+        # resolves to nothing is the failure mode of writing the supersession before the new reading is stored.
+        assert row["replacement_fact_id"] is not None
+        assert row["replacement_fact_id"] != row["superseded_fact_id"]
+        assert row["fresh_pattern"] == row["stale_pattern"]
+        assert row["fresh_end_ts"] == row["stale_end_ts"]
+        assert row["fresh_evidence_hash"] is not None
+    for row in retracted:
+        assert row["replacement_fact_id"] is None
+
+    with engine.connect() as conn:
+        still_active = active_detections(
+            conn, ticker="AAPL", timeframe=Timeframe.M15, end_ts=retracted[0]["stale_end_ts"],
+            engine_version="candles-v1",
+        )
+    # The retracted reading left the active view without leaving the table.
+    assert retracted[0]["superseded_fact_id"] not in {row["id"] for row in still_active}
+
+
+def test_re_ingesting_the_same_bars_under_a_new_batch_is_not_a_correction(engine):
+    """D96 again, from the other side: provenance changed and the data did not, so nothing is reconciled."""
+    seed(engine)
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=MARKET_NOW, config=CONFIG)
+    backdated_batch(engine, "AAPL", marching_bars("AAPL"), ingested_at=et(DAY, "16:40"))
+    again = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                              market_now=et(DAY, "16:45"), config=CONFIG)
+    assert again.supersessions == 0
+    assert count(engine, "research_supersessions") == 0

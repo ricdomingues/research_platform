@@ -12,11 +12,17 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from tests.support import et
-from virtual_orders.research.models import Candle, Timeframe
+from virtual_orders.research.models import (
+    Candle,
+    PatternDetection,
+    PatternDirection,
+    Timeframe,
+)
 
 SESSION_DAY = date(2025, 11, 25)
 BASE = et("2025-11-25", "09:30")
 STEP = timedelta(minutes=15)
+DETECTION_ENGINE_VERSION = "candles-v1"
 
 
 def D(value: object) -> Decimal:
@@ -114,3 +120,24 @@ def zigzag(cycles: int = 5, *, period: int = 20, amplitude: float = 1.0, start: 
 
 def closes(candles: Sequence[Candle]) -> list[Decimal]:
     return [item.close for item in candles]
+
+
+def detection(
+    *,
+    pattern: str = "HAMMER",
+    geometry_score: object = "0.60",
+    direction: PatternDirection = PatternDirection.BULLISH,
+    index: int = 0,
+    timeframe: Timeframe = Timeframe.M15,
+) -> PatternDetection:
+    """One detection with fixed timestamps and scores, so `evidence_hash` varies only with what a test changes.
+
+    `geometry_score` is the knob a test turns to say "the same pattern, read differently": it feeds the hash,
+    so two detections of one pattern with different geometry are two distinct readings of the same claim.
+    """
+    ts = BASE + STEP * index
+    return PatternDetection(
+        pattern=pattern, engine_version=DETECTION_ENGINE_VERSION, direction=direction, timeframe=timeframe,
+        start_ts=ts, end_ts=ts + timedelta(minutes=14), candles=1, geometry_score=D(geometry_score),
+        context_score=D("0.50"), overall_score=D("0.55"), evidence={},
+    )
