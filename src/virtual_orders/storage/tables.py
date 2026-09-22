@@ -294,6 +294,7 @@ pattern_detections = Table(
     Column("price_source", Text, nullable=False),
     Column("evidence", JSONB, nullable=False),
     Column("evidence_hash", Text, nullable=False),
+    Column("input_content_hash", Text, nullable=True),
     _ts("data_as_of"), _ts("created_at"),
 )
 
@@ -321,6 +322,7 @@ setup_candidates = Table(
     Column("levels_errors", ARRAY(Text), nullable=False),
     Column("client_signal_id", Text, nullable=False),
     Column("candidate_hash", Text, nullable=False),
+    Column("input_content_hash", Text, nullable=True),
     _ts("data_as_of"), _ts("created_at"),
 )
 
@@ -371,9 +373,51 @@ research_models = Table(
     _ts("data_as_of"), _ts("created_at"),
 )
 
+research_datasets = Table(
+    "research_datasets", metadata,
+    Column("dataset_id", UUID(as_uuid=True), primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("dataset_family_version", Text, nullable=False),
+    Column("provider", Text, nullable=False),
+    Column("feed", Text, nullable=False),
+    Column("base_timeframe", Text, nullable=False),
+    Column("universe_id", UUID(as_uuid=True), nullable=True),
+    Column("universe_version", Text, nullable=True),
+    Column("aggregation_version", Text, nullable=False),
+    Column("calendar_version", Text, nullable=False),
+    Column("adjustment_version", Text, nullable=True),
+    Column("survivorship_bias_status", Text, nullable=False),
+    Column("data_availability_bias", Text, nullable=False),
+    _ts("created_at"),
+)
+
+research_dataset_revisions = Table(
+    "research_dataset_revisions", metadata,
+    Column("revision_id", UUID(as_uuid=True), primary_key=True),
+    Column("dataset_id", UUID(as_uuid=True), nullable=False),
+    Column("revision_number", Integer, nullable=False),
+    _ts("data_as_of"),
+    Column("manifest_hash", Text, nullable=False),
+    _ts("created_at"),
+)
+
+research_supersessions = Table(
+    "research_supersessions", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("fact_type", Text, nullable=False),
+    Column("superseded_fact_id", BigInteger, nullable=False),
+    Column("replacement_fact_id", BigInteger, nullable=True),
+    Column("reason", Text, nullable=False),
+    Column("source_run_id", UUID(as_uuid=True), nullable=False),
+    Column("revision_id", UUID(as_uuid=True), nullable=True),
+    _ts("superseded_at"),
+    Column("input_content_hash", Text, nullable=False),
+)
+
 APPEND_ONLY_TABLES = (
     "signals", "orders", "order_events", "evaluation_runs", "evaluation_run_status",
     "order_eval_segments", "bar_batches", "bars_1m", "market_data_snapshots", "integrity_incidents",
     "data_quality_rechecks", "alert_outbox", "alert_delivery_attempts", "alert_event_marks", "health_state_log",
     "worker_sessions", "pattern_detections", "setup_candidates", "research_backtests", "research_models",
+    "research_datasets", "research_dataset_revisions", "research_supersessions",
 )
