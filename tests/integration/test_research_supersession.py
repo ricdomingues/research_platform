@@ -20,6 +20,7 @@ from tests.integration.test_research_scan import (
 )
 from tests.support import et
 from virtual_orders.marketdata.sources import RawBar
+from virtual_orders.readmodels.research import candidate_detail, list_candidates, list_detections, pattern_markers
 from virtual_orders.research.datasets import (
     ensure_dataset,
     open_revision,
@@ -28,6 +29,7 @@ from virtual_orders.research.datasets import (
 from virtual_orders.research.models import Timeframe
 from virtual_orders.research.repository import (
     FACT_PATTERN_DETECTION,
+    FACT_SETUP_CANDIDATE,
     NO_LONGER_DETECTED,
     SUPERSEDED_BY_REVISION,
     ResearchRunKind,
@@ -39,6 +41,8 @@ from virtual_orders.research.service import run_research_scan
 from virtual_orders.storage import tables
 
 DETECTION_END_TS = datetime(2026, 9, 22, 16, 0, tzinfo=UTC)
+WINDOW_START = DETECTION_END_TS - timedelta(minutes=15)
+WINDOW_END = DETECTION_END_TS + timedelta(minutes=15)
 
 
 def test_the_new_tables_exist_with_their_append_only_triggers(engine):
@@ -196,6 +200,28 @@ def seed_one_detection(engine: Engine) -> int:
                 engine_version="candles-v1", price_source="test", evidence={}, evidence_hash="seed",
                 data_as_of=DETECTION_END_TS, created_at=DETECTION_END_TS,
             ).returning(tables.pattern_detections.c.id)
+        )
+        return int(row.scalar_one())
+
+
+def seed_one_candidate(engine: Engine, detection_id: int) -> int:
+    """Insert one bare setup candidate linked to `detection_id`, and return its id."""
+    with engine.begin() as conn:
+        run = start_run(
+            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=DETECTION_END_TS, code_version="test-sha",
+            engine_version="candles-v1", configuration={},
+        )
+        row = conn.execute(
+            tables.setup_candidates.insert().values(
+                run_id=run.run_id, pattern_detection_id=detection_id, ticker="AAPL", timeframe="15m",
+                detected_at=DETECTION_END_TS, direction="LONG", pattern="HAMMER", strategy="test-strategy",
+                strategy_version="v1", feature_version="v1", scoring_version="v1", feature_document={},
+                thesis_document={}, deterministic_score=Decimal("0.5"), ml_probability=None,
+                model_version=None, label_version=None, entry_zone_low=None, entry_zone_high=None,
+                stop=None, target1=None, target2=None, risk_reward=None, levels_valid=False,
+                levels_errors=["NO_LEVELS"], client_signal_id="seed-signal", candidate_hash="seed",
+                data_as_of=DETECTION_END_TS, created_at=DETECTION_END_TS,
+            ).returning(tables.setup_candidates.c.id)
         )
         return int(row.scalar_one())
 
@@ -445,3 +471,61 @@ def test_re_ingesting_the_same_bars_under_a_new_batch_is_not_a_correction(engine
                               market_now=et(DAY, "16:45"), config=CONFIG)
     assert again.supersessions == 0
     assert count(engine, "research_supersessions") == 0
+
+
+# --- The active view reaches the read models (D96, task 7) ------------------------------------------------
+#
+# Reconciliation only ever writes a PATTERN_DETECTION-typed supersession row today (see the scan above): a
+# candidate is derived from its detection, so a retracted detection must take its candidate with it even
+# though no SETUP_CANDIDATE-typed row exists yet. The tests below cover both routes a candidate can be
+# excluded by, plus the audit path that must still see everything.
+
+
+def test_a_retracted_detection_disappears_from_the_read_models(engine):
+    detection_id = seed_one_detection(engine)
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=detection_id,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(), revision_id=None,
+            superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC), input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        assert list_detections(conn, ticker="AAPL", limit=50) == []
+        assert pattern_markers(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                               start=WINDOW_START, end=WINDOW_END) == []
+        audited = list_detections(conn, ticker="AAPL", limit=50, include_superseded=True)
+    assert [row["id"] for row in audited] == [detection_id]
+
+
+def test_a_candidate_disappears_when_its_own_fact_is_superseded(engine):
+    """The fact_type = SETUP_CANDIDATE path, kept working for the day reconciliation writes it directly."""
+    detection_id = seed_one_detection(engine)
+    candidate_id = seed_one_candidate(engine, detection_id)
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_SETUP_CANDIDATE, superseded_fact_id=candidate_id,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(), revision_id=None,
+            superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC), input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        assert list_candidates(conn, ticker="AAPL", limit=50) == []
+        assert candidate_detail(conn, candidate_id) is None
+        audited = list_candidates(conn, ticker="AAPL", limit=50, include_superseded=True)
+    assert [row["id"] for row in audited] == [candidate_id]
+
+
+def test_a_candidate_disappears_when_its_parent_detection_is_retracted(engine):
+    """Nothing writes a SETUP_CANDIDATE-typed row for this case, so the exclusion must follow the parent link."""
+    detection_id = seed_one_detection(engine)
+    candidate_id = seed_one_candidate(engine, detection_id)
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=detection_id,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(), revision_id=None,
+            superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC), input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        assert list_candidates(conn, ticker="AAPL", limit=50) == []
+        assert candidate_detail(conn, candidate_id) is None
+        audited = list_candidates(conn, ticker="AAPL", limit=50, include_superseded=True)
+    assert [row["id"] for row in audited] == [candidate_id]
