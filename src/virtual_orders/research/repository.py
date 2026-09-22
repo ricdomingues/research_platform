@@ -39,8 +39,16 @@ from virtual_orders.storage.tables import (
     pattern_detections,
     research_backtests,
     research_runs,
+    research_supersessions,
     setup_candidates,
 )
+
+# Supersession vocabulary (Plan 6, D96): the two ways a later revision can retire a fact, and the two kinds of
+# fact it can retire.
+SUPERSEDED_BY_REVISION = "SUPERSEDED_BY_REVISION"
+NO_LONGER_DETECTED = "NO_LONGER_DETECTED"
+FACT_PATTERN_DETECTION = "PATTERN_DETECTION"
+FACT_SETUP_CANDIDATE = "SETUP_CANDIDATE"
 
 
 class ResearchRunKind(StrEnum):
@@ -143,6 +151,7 @@ def record_detection(
     price_source: str,
     detection: PatternDetection,
     data_as_of: datetime,
+    input_content_hash: str | None = None,
 ) -> tuple[int, bool]:
     """Store one detection idempotently. Returns (id, inserted): a repeat scan returns the original id."""
     values = {
@@ -152,6 +161,7 @@ def record_detection(
         "context_score": detection.context_score, "overall_score": detection.overall_score,
         "engine_version": detection.engine_version, "price_source": price_source,
         "evidence": document(detection.evidence), "evidence_hash": detection.evidence_hash,
+        "input_content_hash": input_content_hash,
         "data_as_of": data_as_of,
     }
     statement = (
@@ -178,7 +188,8 @@ def record_detection(
 
 
 def record_candidate(
-    conn: Connection, *, run_id: UUID, detection_id: int, candidate: SetupCandidate
+    conn: Connection, *, run_id: UUID, detection_id: int, candidate: SetupCandidate,
+    input_content_hash: str | None = None,
 ) -> tuple[int, bool]:
     """Store one setup candidate idempotently, with its whole feature snapshot and structured thesis."""
     levels = candidate.levels
@@ -204,6 +215,7 @@ def record_candidate(
         # knows the candidate failed on NO_LEVELS, but nothing that reads `setup_candidates` ever saw it.
         "levels_errors": [NO_LEVELS] if levels is None else list(levels.errors),
         "client_signal_id": candidate.client_signal_id, "candidate_hash": candidate.candidate_hash,
+        "input_content_hash": input_content_hash,
         "data_as_of": candidate.data_as_of,
     }
     statement = (
@@ -309,3 +321,67 @@ def candidate_client_signal_ids(conn: Connection, ids: Sequence[int]) -> dict[in
         .where(setup_candidates.c.id.in_(list(ids)))
     )
     return {int(row.id): str(row.client_signal_id) for row in rows}
+
+
+def record_supersession(
+    conn: Connection,
+    *,
+    fact_type: str,
+    superseded_fact_id: int,
+    replacement_fact_id: int | None,
+    reason: str,
+    source_run_id: UUID,
+    revision_id: UUID | None,
+    superseded_at: datetime,
+    input_content_hash: str,
+) -> bool:
+    """Record that a later revision superseded or retracted a fact. Returns False when already recorded.
+
+    Idempotent on (fact_type, superseded_fact_id, input_content_hash): re-running a scan at the same revision
+    must not stack supersession rows for the same correction.
+    """
+    statement = (
+        pg_insert(research_supersessions)
+        .values(
+            fact_type=fact_type, superseded_fact_id=superseded_fact_id,
+            replacement_fact_id=replacement_fact_id, reason=reason, source_run_id=source_run_id,
+            revision_id=revision_id, superseded_at=superseded_at, input_content_hash=input_content_hash,
+        )
+        .on_conflict_do_nothing(index_elements=["fact_type", "superseded_fact_id", "input_content_hash"])
+        .returning(research_supersessions.c.id)
+    )
+    return conn.execute(statement).scalar_one_or_none() is not None
+
+
+def active_detections(
+    conn: Connection,
+    *,
+    ticker: str,
+    timeframe: Timeframe,
+    end_ts: datetime,
+    engine_version: str,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Detections for one bucket that no revision has superseded or retracted.
+
+    With `as_of`, only supersessions recorded at or before that instant count, so the view answers what was
+    active then rather than only what is active now.
+    """
+    gone = select(research_supersessions.c.superseded_fact_id).where(
+        research_supersessions.c.fact_type == FACT_PATTERN_DETECTION
+    )
+    if as_of is not None:
+        gone = gone.where(research_supersessions.c.superseded_at <= as_of)
+    rows = conn.execute(
+        select(
+            pattern_detections.c.id, pattern_detections.c.pattern, pattern_detections.c.evidence_hash,
+            pattern_detections.c.input_content_hash,
+        ).where(and_(
+            pattern_detections.c.ticker == ticker,
+            pattern_detections.c.timeframe == timeframe.value,
+            pattern_detections.c.end_ts == end_ts,
+            pattern_detections.c.engine_version == engine_version,
+            pattern_detections.c.id.not_in(gone),
+        )).order_by(pattern_detections.c.id)
+    ).mappings().all()
+    return [dict(row) for row in rows]

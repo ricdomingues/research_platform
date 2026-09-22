@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 
+from tests.integration.support import count
 from virtual_orders.research.datasets import (
     ensure_dataset,
     open_revision,
     revision_as_of,
 )
+from virtual_orders.research.models import Timeframe
+from virtual_orders.research.repository import (
+    FACT_PATTERN_DETECTION,
+    NO_LONGER_DETECTED,
+    ResearchRunKind,
+    active_detections,
+    record_supersession,
+    start_run,
+)
 from virtual_orders.storage import tables
+
+DETECTION_END_TS = datetime(2026, 9, 22, 16, 0, tzinfo=UTC)
 
 
 def test_the_new_tables_exist_with_their_append_only_triggers(engine):
@@ -154,3 +168,69 @@ def test_concurrent_open_revision_is_serialized_by_advisory_lock(engine):
             " ORDER BY revision_number"
         ), {"dataset_id": dataset_id}).scalars())
     assert numbers == [1, 2]
+
+
+def seed_one_detection(engine: Engine) -> int:
+    """Insert one bare pattern detection, independent of the full scan pipeline, and return its id."""
+    with engine.begin() as conn:
+        run = start_run(
+            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=DETECTION_END_TS, code_version="test-sha",
+            engine_version="candles-v1", configuration={},
+        )
+        row = conn.execute(
+            tables.pattern_detections.insert().values(
+                run_id=run.run_id, ticker="AAPL", timeframe="15m", pattern="HAMMER", direction="BULLISH",
+                start_ts=DETECTION_END_TS - timedelta(minutes=15), end_ts=DETECTION_END_TS, candles=1,
+                geometry_score=Decimal("0.5"), context_score=Decimal("0.5"), overall_score=Decimal("0.5"),
+                engine_version="candles-v1", price_source="test", evidence={}, evidence_hash="seed",
+                data_as_of=DETECTION_END_TS, created_at=DETECTION_END_TS,
+            ).returning(tables.pattern_detections.c.id)
+        )
+        return int(row.scalar_one())
+
+
+def test_a_retracted_detection_leaves_the_active_view_but_stays_in_the_table(engine):
+    detection_id = seed_one_detection(engine)          # helper below
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=detection_id,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(),
+            revision_id=None, superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC),
+            input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        active = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                                   end_ts=DETECTION_END_TS, engine_version="candles-v1")
+    assert active == []
+    assert count(engine, "pattern_detections") == 1   # the fact itself is untouched
+
+
+def test_the_active_view_answers_as_of_an_earlier_instant(engine):
+    """Reconstructing what the platform claimed before a correction is the point of D96."""
+    detection_id = seed_one_detection(engine)
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=detection_id,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(),
+            revision_id=None, superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC),
+            input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        before = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15, end_ts=DETECTION_END_TS,
+                                   engine_version="candles-v1",
+                                   as_of=datetime(2026, 9, 22, 18, 0, tzinfo=UTC))
+    assert [row["id"] for row in before] == [detection_id]
+
+
+def test_recording_the_same_supersession_twice_is_idempotent(engine):
+    detection_id = seed_one_detection(engine)
+    arguments = dict(
+        fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=detection_id, replacement_fact_id=None,
+        reason=NO_LONGER_DETECTED, source_run_id=uuid4(), revision_id=None,
+        superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC), input_content_hash="corrected",
+    )
+    with engine.begin() as conn:
+        assert record_supersession(conn, **arguments) is True
+    with engine.begin() as conn:
+        assert record_supersession(conn, **arguments) is False
+    assert count(engine, "research_supersessions") == 1
