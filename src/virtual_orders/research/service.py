@@ -52,7 +52,7 @@ from virtual_orders.research.candlesticks import (
     detect_at,
 )
 from virtual_orders.research.features import build_snapshot
-from virtual_orders.research.identity import candles_input_hash
+from virtual_orders.research.identity import bar_index, candles_input_hash
 from virtual_orders.research.indicators import IndicatorSeries, compute_series
 from virtual_orders.research.levels import DEFAULT_POLICY, LevelPolicy, propose_levels
 from virtual_orders.research.market_structure import (
@@ -324,6 +324,14 @@ def _scan_one(
         pivots = swing_points(candles)
         detections = candidates = supersessions = 0
         settle = timedelta(minutes=config.settle_minutes)
+        indexed_bars = bar_index(bars)  # built once: the identity window below is asked for per candle
+        # Everything a reading at one bucket can be derived from: its pattern's own candles, and the
+        # prior-trend lookback measured over the candles before them. `evidence_hash` carries the prior trend
+        # — `context_score` is a function of it and `prior.evidence()` is spliced into the detection's
+        # evidence — so a correction anywhere in this span changes the reading. The lookback comes from the
+        # config the scan actually detects with, never the module default, so raising it cannot silently
+        # leave the hash narrower than the readings it is meant to guard.
+        identity_span = MAX_PATTERN_CANDLES + config.prior_lookback
         for index, candle in enumerate(candles):
             already_read = resume is not None and candle.end_ts <= resume
             if already_read and (revisit_from is None or candle.end_ts < revisit_from):
@@ -332,11 +340,7 @@ def _scan_one(
                 # Every later candle of this series is newer, so none of them is settled either. Leaving the
                 # resume watermark where it is means this bucket is read again next scan, with its real shape.
                 break
-            # Identity of everything a reading at this bucket can be derived from: the bucket itself and the
-            # candles its longest supported pattern reaches back over. Narrowing this to the bucket's own bars
-            # let a correction to an earlier contributing candle change the reading while the guard below
-            # called the input unchanged, leaving both the stale and the corrected reading active at once.
-            input_hash = candles_input_hash(bars, candles[max(0, index - MAX_PATTERN_CANDLES + 1) : index + 1])
+            input_hash = candles_input_hash(indexed_bars, candles[max(0, index - identity_span + 1) : index + 1])
             found = detect_at(
                 candles[: index + 1], index,
                 prior=prior_context(candles, index, lookback=config.prior_lookback),

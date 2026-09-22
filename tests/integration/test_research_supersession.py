@@ -373,6 +373,68 @@ def test_a_correction_to_an_earlier_candle_of_a_pattern_supersedes_the_reading_i
     assert rows[0]["replacement_fact_id"] == after[0]["id"]
 
 
+# A reading's `evidence_hash` carries its prior trend (`candlesticks.py` splices `prior.evidence()` into the
+# detection's evidence, and `context_score` is a function of the same `PriorTrend`), and the prior trend of a
+# three-candle reading at bucket N is measured over buckets N-22 through N-3. Correcting the close of bucket
+# N-22 therefore changes what the reading at N says, while bucket N's own bars — and the two before it — are
+# untouched.
+#
+# The trend is the move between the FIRST and LAST candle of its lookback, so those two buckets are the only
+# distances at which a one-minute correction can change it: N-3, which a four-bucket window would already
+# catch, and N-22, which pins the whole span. This test uses N-22 deliberately.
+PRIOR_WINDOW_FIRST_MINUTE = 14   # closes bucket 0, the first candle of the lookback behind the reading below
+READING_AFTER_PRIOR_BUCKET_END = "15:14"  # ET; bucket 22, whose prior trend is measured over buckets 0..19
+
+
+def restate_one_minute(engine, ticker="AAPL", minute_index=PRIOR_WINDOW_FIRST_MINUTE, close="110.00"):
+    """A vendor correction that moves a minute's close far enough to reverse the trend it anchors.
+
+    The bucket this minute closes is the first of the prior-trend lookback behind a reading 22 buckets later.
+    Restating it turns the measured move from a fall into a rise, so that reading's context score and its
+    spliced prior-trend evidence both change — without touching a single bar of the reading's own candles.
+    """
+    original = marching_bars(ticker)[minute_index]
+    corrected_close = Decimal(close)
+    corrected = RawBar(
+        ticker, original.ts, original.open, max(original.open, original.high),
+        min(original.low, corrected_close - Decimal("0.01")), corrected_close, original.volume,
+    )
+    backdated_batch(engine, ticker, [corrected], ingested_at=et(DAY, "16:40"))
+
+
+def test_a_correction_inside_the_prior_trend_supersedes_the_reading_whose_context_it_changes(engine):
+    """`evidence_hash` covers the prior trend, so the window that decides "did the input change" must too.
+
+    A reading is not a function of its pattern's candles alone: its context score and its prior-trend evidence
+    are measured over the twenty buckets before them. Hashing only the pattern's own candles let a correction
+    in that band change the reading while the guard called the input unchanged — and because the corrected
+    reading is stored regardless, the bucket was left with two contradictory active readings and no link.
+    """
+    seed(engine)
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=MARKET_NOW, config=CONFIG)
+    bucket_end = et(DAY, READING_AFTER_PRIOR_BUCKET_END)
+    with engine.connect() as conn:
+        before = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                                   end_ts=bucket_end, engine_version="candles-v1")
+    assert len(before) == 1  # one reading for this bucket to begin with
+
+    restate_one_minute(engine)
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=et(DAY, "16:45"), config=CONFIG)
+
+    with engine.connect() as conn:
+        after = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                                  end_ts=bucket_end, engine_version="candles-v1")
+    assert len(after) == 1, "the active view holds more than one reading for a single bucket"
+    assert after[0]["id"] != before[0]["id"], "the reading really did change, so the stale one must not remain"
+
+    links = [row for row in supersession_rows(engine)
+             if row["superseded_fact_id"] == before[0]["id"]]
+    assert [row["reason"] for row in links] == [SUPERSEDED_BY_REVISION]
+    assert links[0]["replacement_fact_id"] == after[0]["id"]
+
+
 def test_re_ingesting_the_same_bars_under_a_new_batch_is_not_a_correction(engine):
     """D96 again, from the other side: provenance changed and the data did not, so nothing is reconciled."""
     seed(engine)

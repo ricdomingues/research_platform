@@ -5,9 +5,12 @@ produces a *new* fact and a supersession row pointing at the old one; a revision
 altogether produces a retraction, with no replacement, because inventing an "empty detection" would be a lie
 about what was observed.
 
-`input_content_hash` records the identity of the DATA a fact was built from, so an identical re-ingestion under
-a new batch id is recognised as the non-event it is. It is nullable: rows written before this migration have no
-such identity and must not be given a fabricated one.
+`input_content_hash` is a CHANGE-DETECTION KEY, not an inventory of the bars a fact was built from. It is the
+identity of the DATA that could have influenced a reading at that bucket — the bucket, its pattern's other
+candles, and the prior-trend lookback behind them — so an identical re-ingestion under a new batch id is
+recognised as the non-event it is, while a correction anywhere in that span is not. It is therefore wider than
+the bars any single reading actually read, and the two must not be confused. It is nullable: rows written
+before this migration have no such identity and must not be given a fabricated one.
 
 Revision ID: 0007
 Revises: 0006

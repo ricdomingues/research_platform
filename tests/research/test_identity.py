@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from core.domain.models import Bar
 from virtual_orders.research.identity import (
+    bar_index,
     bars_content_hash,
     candle_input_bars,
     candle_input_hash,
@@ -76,13 +77,13 @@ def later_candle(offset_minutes: int, minutes: int = 15) -> Candle:
 
 def test_a_window_of_one_candle_is_that_candle():
     series = [bar(index) for index in range(30)]
-    assert candles_input_hash(series, [candle()]) == candle_input_hash(series, candle())
+    assert candles_input_hash(bar_index(series), [candle()]) == candle_input_hash(series, candle())
 
 
 def test_a_window_covers_every_bar_of_every_candle_in_it():
     series = [bar(index) for index in range(45)]
     window = [candle(), later_candle(15), later_candle(30)]
-    assert candles_input_hash(series, window) == bars_content_hash(series)
+    assert candles_input_hash(bar_index(series), window) == bars_content_hash(series)
 
 
 def test_correcting_a_bar_in_an_earlier_candle_of_the_window_changes_its_identity():
@@ -93,4 +94,23 @@ def test_correcting_a_bar_in_an_earlier_candle_of_the_window_changes_its_identit
     # The corrected minute falls in the FIRST candle of the window, and the last candle's own bars are
     # untouched — which is exactly the case the single-candle hash could not see.
     assert candle_input_hash(original, later_candle(30)) == candle_input_hash(corrected, later_candle(30))
-    assert candles_input_hash(original, window) != candles_input_hash(corrected, window)
+    assert candles_input_hash(bar_index(original), window) != candles_input_hash(bar_index(corrected), window)
+
+
+def test_a_bar_between_two_buckets_belongs_to_neither():
+    """Bucket by bucket, never one range end to end: a gap's bars were not used by any candle.
+
+    A single `first.ts .. last.end_ts` range would sweep in the minute below and make a correction to it look
+    like a correction to a reading that never read it.
+    """
+    series = [bar(index) for index in range(45)]
+    window = [candle(), later_candle(30)]  # deliberately skipping the bucket between them
+    between = candles_input_hash(bar_index(series), window)
+    moved = [bar(20, close="10.25") if index == 20 else bar(index) for index in range(45)]
+    assert candles_input_hash(bar_index(moved), window) == between
+
+
+def test_the_index_finds_the_same_bars_whatever_order_they_arrive_in():
+    series = [bar(index) for index in range(30)]
+    shuffled = list(reversed(series))
+    assert bar_index(shuffled).between(series[5].ts, series[9].ts) == tuple(series[5:10])
