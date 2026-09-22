@@ -144,10 +144,20 @@ research_bars                        candles de base, 15m nativos
   dataset_id, ticker, ts, session_day
   open, high, low, close, volume
   batch_id                           proveniência pelo mesmo caminho de bar_batches
-  PK (dataset_id, ticker, ts)
+  PK (dataset_id, ticker, ts, batch_id)
 
 research_supersessions               ver D96
 ```
+
+A chave inclui `batch_id` pelo mesmo motivo que `bars_1m` a inclui: uma correção do fornecedor precisa coexistir
+com a barra original, não substituí-la. A leitura é as-of, pelo mesmo padrão de `read_bars_as_of` — a revisão
+mais recente cujo `ingested_at` não ultrapassa o watermark vence — e é essa mudança de barra vencedora que
+dispara a supersessão de D96.
+
+Derivar timeframes acima de `15m` exige estender `timeframes.py`, hoje escrito para resample a partir de barras
+de 1 minuto: a função passa a receber a granularidade-base do dataset em vez de assumi-la. As regras de
+ancoragem, truncamento do último balde e contagem de completude ficam inalteradas — apenas deixam de contar
+minutos e passam a contar base bars.
 
 Integridade dos candles derivados passa de minutos para **base bars**: `base_bars_expected` /
 `base_bars_present` (26 baldes de 15m num pregão regular, 14 num meio-pregão, 4 por hora derivada). Um balde
@@ -160,8 +170,11 @@ Backfill de 2016 em preços não ajustados tornaria ficção todo padrão em tor
 ## 5. Estatística empírica
 
 Uma coorte é definida por, no mínimo: `dataset_version`, `universe_version`, provider/feed, timeframe,
-`setup_version`, `feature_version`, `label_version`, padrão e direção. Estratificações adicionais previstas:
-ticker, regime de mercado.
+`setup_version`, `feature_version`, `label_version`, padrão e direção. Estratificação adicional prevista: ticker.
+
+Estratificar por **regime de mercado** é desejável e fica fora deste plano: não existe definição de regime no
+projeto, e inventar uma aqui criaria um eixo estatístico cuja validade ninguém mediu. A coorte nasce com espaço
+para o eixo; o eixo entra quando houver uma definição versionada e testada.
 
 Para cada coorte, calculados sobre a visão **ativa** do dataset:
 
