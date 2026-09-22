@@ -37,7 +37,7 @@ from virtual_orders.research.models import (
     quantize_ratio,
 )
 
-FEATURE_VERSION = "features-v1"
+FEATURE_VERSION = "features-v2"
 
 
 def session_position(candle: Candle, session_open: datetime, session_close: datetime) -> Decimal | None:
@@ -125,13 +125,23 @@ class FeatureSnapshot:
     market_session_position: Decimal | None
     indicator_parameters: dict[str, Any]
 
+    # What was observed, versus when we came to know it. `data_as_of` and the scan's own clock are provenance:
+    # two scans over identical candles describe the same observation, and giving them different identities made
+    # "how many occurrences exist" depend on how many times the scan ran.
+    PROVENANCE_FIELDS = ("data_as_of",)
+
     def as_document(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
 
+    def semantic_document(self) -> dict[str, Any]:
+        """Everything the snapshot measured, with provenance removed."""
+        return {name: value for name, value in self.as_document().items()
+                if name not in self.PROVENANCE_FIELDS}
+
     @property
     def feature_hash(self) -> str:
-        """Identity of the exact inputs a prediction was made from."""
-        return sha256_hex(self.as_document())
+        """Identity of the exact inputs a prediction was made from, independent of when they were read."""
+        return sha256_hex(self.semantic_document())
 
     # The model's numeric columns, pinned by name and order. Deriving them from the annotations instead would
     # silently change a trained model's input layout the day a field is added, so the list is explicit and any

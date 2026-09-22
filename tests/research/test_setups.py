@@ -5,7 +5,8 @@ signal is through the existing intake, with a body the existing parser accepts u
 """
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -72,6 +73,17 @@ def engulfing():
                                                    data_as_of=BASE)
                 if item.pattern == "BULLISH_ENGULFING"]
     return found
+
+
+def build_snapshot_for_tests():
+    """A real `FeatureSnapshot`, produced the same way every other test in this module obtains one."""
+    return engulfing().features
+
+
+def snapshot_fixture(**overrides: object):
+    """An existing snapshot with named fields swapped. Avoids restating every field of FeatureSnapshot."""
+    base = build_snapshot_for_tests()
+    return replace(base, **overrides)
 
 
 def candidate(levels=VALID_LEVELS, **overrides):
@@ -467,3 +479,18 @@ def test_an_override_never_manufactures_a_level_chain(row):
     built = candidate(levels=VALID_LEVELS)
     with pytest.raises(ValueError, match="NO_TRADABLE_LEVELS"):
         stored_signal_body(stored_row(built, **row), overridden=(NOT_VALIDATED,))
+
+
+# --- semantic identity (D97) --------------------------------------------------------------------------------
+def test_the_same_observation_at_two_clocks_has_one_identity():
+    """D97: identity is what was observed, not when. Provenance is recorded, not hashed."""
+    morning = snapshot_fixture(data_as_of=datetime(2026, 9, 21, 14, 0, tzinfo=UTC))
+    evening = snapshot_fixture(data_as_of=datetime(2026, 9, 21, 20, 0, tzinfo=UTC))
+    assert morning.data_as_of != evening.data_as_of
+    assert morning.feature_hash == evening.feature_hash
+
+
+def test_a_changed_measurement_still_changes_the_identity():
+    baseline = snapshot_fixture()
+    moved = snapshot_fixture(rsi14=Decimal("41.0"))
+    assert baseline.feature_hash != moved.feature_hash

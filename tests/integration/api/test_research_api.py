@@ -74,7 +74,7 @@ def seed_backtest(engine, pattern="THREE_WHITE_SOLDIERS"):
 def test_versions_name_every_rule_behind_a_stored_observation(api):
     body = api.client.get("/research/versions").json()
     assert body["engine_version"] == "candles-v1"
-    assert body["feature_version"] == "features-v1" and body["scoring_version"] == "scoring-v1"
+    assert body["feature_version"] == "features-v2" and body["scoring_version"] == "scoring-v1"
     assert body["ambiguity_policy"] == "STOP_FIRST_ON_SAME_CANDLE_V1"
     assert len(body["supported_patterns"]) == 15
     assert body["supported_timeframes"] == ["5m", "15m", "30m", "1h", "4h", "1d"]
@@ -122,7 +122,7 @@ def test_a_candidate_detail_carries_its_snapshot_thesis_and_detection(api):
     (row,) = api.client.get("/research/candidates").json()["candidates"]
     body = api.client.get(f"/research/candidates/{row['id']}").json()
     assert body["candidate"]["pattern"] == "BULLISH_ENGULFING"
-    assert body["candidate"]["feature_document"]["feature_version"] == "features-v1"
+    assert body["candidate"]["feature_document"]["feature_version"] == "features-v2"
     assert body["candidate"]["thesis_document"]["kind"] == "RESEARCH_CANDLESTICK_SETUP"
     assert body["detection"]["evidence"]["previous_direction"] == "BEARISH"
     assert body["detection"]["engine_version"] == "candles-v1"

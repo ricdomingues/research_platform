@@ -293,12 +293,6 @@ def _scan_one(
                     data_as_of=data_as_of,
                 )
                 detections += int(inserted)
-                if not inserted:
-                    # An unchanged reading of a revisited candle. Its candidate was written in the same
-                    # transaction as the detection itself, so there is nothing new to derive -- and deriving it
-                    # anyway would store a duplicate, because `FeatureSnapshot` carries the scan's `data_as_of`
-                    # and therefore hashes differently on every run even when every measured value is identical.
-                    continue
                 candidate = _candidate_for(
                     ticker=ticker, candles=candles, index=index, detection=detection, series=series,
                     structure=structure, estimate=estimate, side=side, bounds=bounds, atr_value=atr_value,
