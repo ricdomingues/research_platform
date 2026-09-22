@@ -774,3 +774,43 @@ def model_rows(models: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
         "Brier (validação)": fmt_decimal((m.get("validation_metrics") or {}).get("brier"), 4),
         "Registrado": fmt_ts(m.get("created_at")),
     } for m in models]
+
+
+def aggregate_bars(bars: Sequence[Mapping[str, Any]], minutes: int) -> list[dict[str, Any]]:
+    """Stored 1-minute bars folded into `minutes`-wide candles, in order.
+
+    The engine's own resampling is session-aware and lives behind the scan; this is the chart's much smaller
+    need: group by wall-clock bucket so a 15m view shows 15m candles. Buckets are labelled by their first
+    minute, and a bucket with no bar simply does not appear — a missing minute is never invented.
+    """
+    if minutes < 1:
+        raise ValueError("minutes must be >= 1")
+    buckets: dict[datetime, dict[str, Any]] = {}
+    for bar in bars:
+        moment = bar["ts"] if isinstance(bar["ts"], datetime) else datetime.fromisoformat(str(bar["ts"]))
+        start = moment.replace(second=0, microsecond=0)
+        start -= timedelta(minutes=start.minute % minutes)
+        found = buckets.get(start)
+        if found is None:
+            buckets[start] = {
+                "ts": start, "open": _decimal(bar["open"]), "high": _decimal(bar["high"]),
+                "low": _decimal(bar["low"]), "close": _decimal(bar["close"]),
+                "volume": _decimal(bar.get("volume", 0)),
+            }
+            continue
+        found["high"] = max(found["high"], _decimal(bar["high"]))
+        found["low"] = min(found["low"], _decimal(bar["low"]))
+        found["close"] = _decimal(bar["close"])
+        found["volume"] += _decimal(bar.get("volume", 0))
+    return [buckets[key] for key in sorted(buckets)]
+
+
+TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 390}
+
+
+def promotion_blockers(detail: Mapping[str, Any] | None) -> list[str]:
+    """The policy reasons carried by a refused promotion, in the order the boundary reported them."""
+    if not isinstance(detail, Mapping):
+        return []
+    errors = detail.get("errors")
+    return [str(item) for item in errors] if isinstance(errors, Sequence) and not isinstance(errors, str) else []

@@ -19,12 +19,14 @@ from dashboard.views import (
     portfolio,
     research,
     signals,
+    terminal,
     watchlist,
 )
 
 CLIENT_KEY = "api_client"
 PAGES: dict[str, Callable[[ApiClient], None]] = {
     "Visão geral": overview.render,
+    "Terminal": terminal.render,
     "Sinais do dia": signals.render,
     "Ordens": orders.render,
     "Comparação": comparison.render,

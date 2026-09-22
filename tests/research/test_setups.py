@@ -37,15 +37,19 @@ from virtual_orders.research.promotion import (
     EXPECTANCY_BELOW_MINIMUM,
     INSUFFICIENT_BACKTEST_SAMPLES,
     INVALID_LEVELS,
+    MANUAL_SOURCE,
     ML_PROBABILITY_REQUIRED,
     NO_LEVELS,
     NOT_VALIDATED,
     SCORE_BELOW_MINIMUM,
     PromotionPolicy,
     decide,
+    decide_stored,
     is_promotable,
     promotion_errors,
     signal_body,
+    stored_promotion_errors,
+    stored_signal_body,
 )
 from virtual_orders.research.scoring import SCORE_INTERPRETATION, ScoreWeights, score_setup
 from virtual_orders.research.setups import RESEARCH_STRATEGY, build_candidate
@@ -399,3 +403,67 @@ def test_real_statistics_can_be_used_as_promotion_evidence():
     stats = summarize(build_occurrences(zigzag(cycles=4), ticker="AAPL", data_as_of=BASE))
     errors = promotion_errors(candidate(deterministic_score=D("0.72")), evidence=stats)
     assert NOT_VALIDATED not in errors  # evidence was supplied; whether it passes depends on the numbers
+
+
+# --- the stored-row promotion path ---------------------------------------------------------------------------
+def stored_row(candidate, **overrides):
+    """The candidate as `setup_candidates` stores it, which is all the promotion route ever sees."""
+    levels = candidate.levels
+    row = {
+        "client_signal_id": candidate.client_signal_id, "strategy": candidate.strategy,
+        "strategy_version": candidate.strategy_version, "ticker": candidate.ticker,
+        "direction": candidate.direction.value, "pattern": candidate.pattern,
+        "timeframe": candidate.timeframe.value, "deterministic_score": candidate.deterministic_score,
+        "ml_probability": candidate.ml_probability, "model_version": candidate.model_version,
+        "entry_zone_low": None if levels is None else levels.entry_zone_low,
+        "entry_zone_high": None if levels is None else levels.entry_zone_high,
+        "stop": None if levels is None else levels.stop,
+        "target1": None if levels is None else levels.target1,
+        "target2": None if levels is None else levels.target2,
+        "levels_valid": bool(levels is not None and levels.valid),
+    }
+    return {**row, **overrides}
+
+
+@pytest.mark.parametrize("levels,evidence", [
+    (VALID_LEVELS, EVIDENCE), (VALID_LEVELS, None), (None, EVIDENCE), (None, None),
+])
+def test_judging_a_stored_row_gives_the_same_verdict_as_judging_the_candidate(levels, evidence):
+    """The two paths must never disagree: the route reads rows, every other caller holds the object."""
+    built = candidate(levels=levels)
+    assert stored_promotion_errors(stored_row(built), evidence=evidence) == promotion_errors(
+        built, evidence=evidence)
+    assert decide_stored(stored_row(built), evidence=evidence).promotable is decide(
+        built, evidence=evidence).promotable
+
+
+def test_a_stored_row_that_passes_produces_the_same_signal_body():
+    built = candidate(levels=VALID_LEVELS)
+    from_object = signal_body(built)
+    from_row = stored_signal_body(stored_row(built))
+    for field in ("client_signal_id", "strategy", "strategy_version", "source", "ticker", "direction",
+                  "entry_zone_low", "entry_zone_high", "stop", "target1", "target2", "valid_sessions"):
+        assert from_row[field] == from_object[field], field
+
+
+def test_an_override_is_recorded_in_the_body_it_submits():
+    """An overridden promotion has to stay separable from one the policy allowed, forever and in SQL."""
+    built = candidate(levels=VALID_LEVELS)
+    overruled = (SCORE_BELOW_MINIMUM, NOT_VALIDATED)
+    body = stored_signal_body(stored_row(built), overridden=overruled, thesis={"kind": "TEST"})
+    assert body["source"] == MANUAL_SOURCE  # one predicate separates it from every engine-made signal
+    assert '"promotion_override"' in body["thesis"]
+    for code in overruled:
+        assert code in body["thesis"]
+    # Prices are the candidate's own: an override waives the policy, never the chain.
+    assert body["stop"] == VALID_LEVELS.stop and body["target1"] == VALID_LEVELS.target1
+
+
+@pytest.mark.parametrize("row", [
+    {"entry_zone_low": None, "levels_valid": False},
+    {"levels_valid": False},
+])
+def test_an_override_never_manufactures_a_level_chain(row):
+    built = candidate(levels=VALID_LEVELS)
+    with pytest.raises(ValueError, match="NO_TRADABLE_LEVELS"):
+        stored_signal_body(stored_row(built, **row), overridden=(NOT_VALIDATED,))

@@ -7,12 +7,14 @@ the vendor has since corrected.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Connection, Select, and_, select
 
+from virtual_orders.research.backtest import BacktestStats
 from virtual_orders.research.models import Timeframe
 from virtual_orders.storage.tables import (
     pattern_detections,
@@ -227,3 +229,45 @@ def list_registered_models(conn: Connection, *, limit: int = 20) -> list[dict[st
     )
     query = select(*columns).order_by(research_models.c.created_at.desc(), research_models.c.id.desc())
     return [dict(row) for row in conn.execute(query.limit(limit)).mappings()]
+
+
+def latest_backtest_stats(
+    conn: Connection, *, pattern: str, timeframe: str, split: str = "TEST"
+) -> BacktestStats | None:
+    """The newest out-of-sample statistics for a pattern and timeframe, or None when it has never been measured.
+
+    This is the evidence the promotion boundary demands. It is read from the stored row rather than the
+    `statistics` document so that the numbers the policy judges are the same ones the table reports: the
+    document is kept for the fields no gate reads, and those are filled from it when present.
+    """
+    row = conn.execute(
+        select(research_backtests)
+        .where(and_(research_backtests.c.pattern == pattern, research_backtests.c.timeframe == timeframe,
+                    research_backtests.c.split == split))
+        .order_by(research_backtests.c.period_to.desc(), research_backtests.c.id.desc())
+        .limit(1)
+    ).mappings().first()
+    if row is None:
+        return None
+    document = row["statistics"] if isinstance(row["statistics"], Mapping) else {}
+
+    def _decimal(name: str) -> Decimal | None:
+        value = row[name] if name in row else document.get(name)
+        return None if value is None else Decimal(str(value))
+
+    def _pair(name: str) -> tuple[float, float] | None:
+        value = document.get(name)
+        return None if value is None else (float(value[0]), float(value[1]))
+
+    return BacktestStats(
+        backtest_version=str(row["backtest_version"]), samples=int(row["samples"]),
+        resolved=int(row["resolved"]), wins=int(row["wins"]), losses=int(row["losses"]),
+        timeouts=int(row["timeouts"]), ambiguous=int(row["ambiguous"]),
+        gap_through=int(document.get("gap_through", 0)), win_rate=_decimal("win_rate"),
+        avg_return_pct=_decimal("avg_return_pct"), median_return_pct=_decimal("median_return_pct"),
+        expectancy_r=_decimal("expectancy_r"), avg_r=_decimal("avg_r"),
+        profit_factor=_decimal("profit_factor"), max_drawdown_r=float(row["max_drawdown_r"]),
+        avg_mfe_r=_decimal("avg_mfe_r"), avg_mae_r=_decimal("avg_mae_r"),
+        win_rate_ci=_pair("win_rate_ci"), expectancy_ci=_pair("expectancy_ci"),
+        warnings=tuple(str(item) for item in document.get("warnings", ())),
+    )

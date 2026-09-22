@@ -142,3 +142,103 @@ def pressure_buckets_figure(buckets: Sequence[Mapping[str, Any]], *, method: str
     figure.update_layout(title={"text": f"R médio por pressão estimada ({method}) — não é fluxo de ordens"},
                          yaxis_title="R", height=320)
     return figure
+
+
+# --- Lightweight Charts (D94) --------------------------------------------------------------------------------
+# TradingView's own library renders the terminal-style view. It reads plain dicts, so everything below is a
+# pure builder like the Plotly ones above: it converts Decimals to the floats the JS side needs and returns
+# configuration, never drawing anything itself.
+UP, DOWN = "#26a69a", "#ef5350"
+LEVEL_LINES = (
+    ("entry_zone_low", "Entrada (base)", "#2E7D32"),
+    ("entry_zone_high", "Entrada (topo)", "#2E7D32"),
+    ("stop", "Stop", "#C62828"),
+    ("target1", "Alvo 1", "#1565C0"),
+    ("target2", "Alvo 2", "#6A1B9A"),
+)
+
+
+def _epoch(value: Any) -> int:
+    moment = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return int(moment.timestamp())
+
+
+def lightweight_candles(candles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "time": _epoch(candle["ts"]), "open": _number(candle["open"]), "high": _number(candle["high"]),
+        "low": _number(candle["low"]), "close": _number(candle["close"]),
+    } for candle in candles]
+
+
+def lightweight_volume(candles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "time": _epoch(candle["ts"]), "value": _number(candle["volume"]),
+        "color": UP if _number(candle["close"]) >= _number(candle["open"]) else DOWN,
+    } for candle in candles]
+
+
+def lightweight_markers(markers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Detected patterns on the bar they were read from, drawn by direction (spec 22)."""
+    drawn = []
+    for marker in markers:
+        direction = str(marker.get("direction", "NEUTRAL"))
+        bullish = direction == "BULLISH"
+        drawn.append({
+            "time": _epoch(marker.get("end_ts") or marker["ts"]),
+            "position": "belowBar" if bullish else "aboveBar",
+            "color": PATTERN_COLOURS.get(direction, PATTERN_COLOURS["NEUTRAL"]),
+            "shape": "arrowUp" if bullish else ("arrowDown" if direction == "BEARISH" else "circle"),
+            "text": str(marker.get("pattern", "")),
+        })
+    return sorted(drawn, key=lambda item: item["time"])
+
+
+def lightweight_price_lines(levels: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The candidate's own prices as horizontal lines: entry zone, stop and targets."""
+    levels = levels or {}
+    return [{
+        "price": _number(levels[name]), "color": colour, "lineWidth": 2, "lineStyle": 2,
+        "axisLabelVisible": True, "title": title,
+    } for name, title, colour in LEVEL_LINES if levels.get(name) is not None]
+
+
+def lightweight_charts(
+    candles: Sequence[Mapping[str, Any]],
+    *,
+    markers: Sequence[Mapping[str, Any]] = (),
+    levels: Mapping[str, Any] | None = None,
+    height: int = 460,
+) -> list[dict[str, Any]]:
+    """The full two-pane configuration: price with markers and levels above, volume below."""
+    return [
+        {
+            "chart": {
+                "height": height,
+                "layout": {"background": {"type": "solid", "color": "#FFFFFF"}, "textColor": "#333333",
+                           "attributionLogo": True},
+                "grid": {"vertLines": {"color": "#F0F3FA"}, "horzLines": {"color": "#F0F3FA"}},
+                "timeScale": {"timeVisible": True, "secondsVisible": False, "borderColor": "#D1D4DC"},
+                "rightPriceScale": {"borderColor": "#D1D4DC"},
+                "crosshair": {"mode": 0},
+            },
+            "series": [{
+                "type": "Candlestick",
+                "data": lightweight_candles(candles),
+                "options": {"upColor": UP, "downColor": DOWN, "borderVisible": False,
+                            "wickUpColor": UP, "wickDownColor": DOWN},
+                "markers": lightweight_markers(markers),
+                "priceLines": lightweight_price_lines(levels),
+            }],
+        },
+        {
+            "chart": {
+                "height": max(110, height // 4),
+                "layout": {"background": {"type": "solid", "color": "#FFFFFF"}, "textColor": "#333333",
+                           "attributionLogo": False},
+                "grid": {"vertLines": {"color": "#F0F3FA"}, "horzLines": {"color": "#F0F3FA"}},
+                "timeScale": {"timeVisible": True, "secondsVisible": False, "borderColor": "#D1D4DC"},
+            },
+            "series": [{"type": "Histogram", "data": lightweight_volume(candles),
+                        "options": {"priceFormat": {"type": "volume"}}}],
+        },
+    ]

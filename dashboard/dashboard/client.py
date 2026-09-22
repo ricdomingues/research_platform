@@ -270,6 +270,13 @@ class ApiClient:
             "ticker": ticker, "timeframe": timeframe, "from": start, "to": end, "limit": limit,
         })["markers"])
 
+    def promote_candidate(
+        self, candidate_id: int, *, override: bool = False, auto_order: bool = True
+    ) -> JsonObject:
+        """Promote one candidate through the engine's own boundary. A refusal raises with its reasons."""
+        return self._request("POST", f"/research/candidates/{int(candidate_id)}/promote",
+                             body={"override": override, "auto_order": auto_order})
+
     def research_backtests(
         self, *, pattern: str | None = None, timeframe: str | None = None, split: str | None = None,
         ticker: str | None = None, limit: int = 100,

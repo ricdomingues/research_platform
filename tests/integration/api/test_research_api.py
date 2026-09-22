@@ -1,17 +1,23 @@
-"""The research routes over the real app: read-only views, fixed error codes and versions that travel along.
+"""The research routes over the real app: views, fixed error codes and versions that travel along.
 
-The route set is deliberately all GET. The test at the end pins that behaviourally: every research path refuses
-a write, because neither starting a scan nor promoting a candidate should follow from looking at a list.
+Every listing route is GET and refuses a write, pinned at the end of this file: looking at a list never starts
+a scan and never promotes anything. Promotion has exactly one way in — `POST /research/candidates/{id}/promote`
+for one named candidate — and the tests here pin both halves of it: the policy refuses by default with every
+reason it found, and an override is recorded as an override rather than passing silently.
 """
 
 from datetime import timedelta
 from decimal import Decimal
 
-from tests.integration.support import DAY
+from sqlalchemy import select
+
+from tests.integration.support import DAY, count
 from tests.research.support import BASE, bullish_engulfing_after_decline, zigzag
 from tests.support import et
 from virtual_orders.research.backtest import build_occurrences, summarize
+from virtual_orders.research.levels import RiskLevels
 from virtual_orders.research.models import Timeframe
+from virtual_orders.research.promotion import MANUAL_SOURCE
 from virtual_orders.research.repository import (
     ResearchRunKind,
     ResearchRunStatus,
@@ -23,6 +29,7 @@ from virtual_orders.research.repository import (
 )
 from virtual_orders.research.scoring import score_setup
 from virtual_orders.research.setups import build_candidate
+from virtual_orders.storage import tables
 
 from core.domain.models import Direction  # isort: skip
 
@@ -199,3 +206,89 @@ def test_every_research_route_refuses_a_write(api):
             assert response.json()["error"]["code"] == "METHOD_NOT_ALLOWED"
     for path in ("/research/markers", "/research/candidates/1"):
         assert api.client.post(path).status_code == 405, path
+
+
+TRADABLE_LEVELS = RiskLevels(
+    levels_version="levels-v1", policy={}, direction=Direction.LONG, entry_zone_low=Decimal("100"),
+    entry_zone_high=Decimal("101"), stop=Decimal("98"), target1=Decimal("105"), target2=Decimal("108"),
+    risk=Decimal("3"), risk_reward=Decimal("2"), basis={}, valid=True, errors=(),
+)
+
+
+def seed_with_levels(engine, ticker="AAPL", levels=TRADABLE_LEVELS):
+    """A stored candidate carrying a valid level chain — the only kind that has prices to trade."""
+    (occurrence,) = [item for item in build_occurrences(bullish_engulfing_after_decline(), ticker=ticker,
+                                                        data_as_of=DATA_AS_OF)
+                     if item.pattern == "BULLISH_ENGULFING"]
+    candidate = build_candidate(
+        ticker=ticker, detection=occurrence.detection, snapshot=occurrence.features,
+        score=score_setup(occurrence.detection, occurrence.features, Direction.LONG), data_as_of=DATA_AS_OF,
+        levels=levels,
+    )
+    assert candidate is not None
+    with engine.begin() as conn:
+        run = start_run(conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=DATA_AS_OF, code_version="test-sha",
+                        engine_version="candles-v1", configuration=CONFIG)
+        detection_id, _ = record_detection(conn, run_id=run.run_id, ticker=ticker, price_source="fake_feed",
+                                           detection=occurrence.detection, data_as_of=DATA_AS_OF)
+        candidate_id, _ = record_candidate(conn, run_id=run.run_id, detection_id=detection_id,
+                                           candidate=candidate)
+        finish_run(conn, run.run_id, ResearchRunStatus.COMPLETED, {"detections": 1, "candidates": 1})
+    return candidate_id, candidate
+
+
+def test_promotion_is_refused_by_default_with_every_reason_the_policy_found(api):
+    """The boundary holds by default. Nothing is promoted because a dashboard asked politely."""
+    candidate_id, _ = seed_with_levels(api.services.engine)
+    response = api.client.post(f"/research/candidates/{candidate_id}/promote")
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "CANDIDATE_NOT_PROMOTABLE"
+    # No backtest has ever measured this pattern, which is the whole point of the gate.
+    assert "NOT_VALIDATED" in error["detail"]["errors"]
+    assert error["detail"]["decision"]["promotable"] is False
+    assert count(api.services.engine, "signals") == 0
+
+
+def test_an_override_promotes_the_candidate_and_records_what_it_overruled(api):
+    candidate_id, candidate = seed_with_levels(api.services.engine)
+    response = api.client.post(f"/research/candidates/{candidate_id}/promote", json={"override": True})
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["overridden"] is True
+    assert body["signal_id"] is not None and body["auto_order_id"] is not None
+    assert "NOT_VALIDATED" in body["decision"]["errors"]
+
+    with api.services.engine.connect() as conn:
+        row = conn.execute(select(tables.signals)).mappings().one()
+    # One predicate separates a forced promotion from anything the engine decided on its own.
+    assert row["source"] == MANUAL_SOURCE
+    assert row["client_signal_id"] == candidate.client_signal_id
+    assert row["entry_zone_low"] == TRADABLE_LEVELS.entry_zone_low
+    assert row["stop"] == TRADABLE_LEVELS.stop and row["target1"] == TRADABLE_LEVELS.target1
+    assert "promotion_override" in row["thesis"]
+
+
+def test_promoting_the_same_candidate_twice_creates_one_signal(api):
+    """The candidate's own id is the idempotency key the existing intake already enforces."""
+    candidate_id, _ = seed_with_levels(api.services.engine)
+    first = api.client.post(f"/research/candidates/{candidate_id}/promote", json={"override": True})
+    second = api.client.post(f"/research/candidates/{candidate_id}/promote", json={"override": True})
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.json()["signal_id"] == second.json()["signal_id"]
+    assert count(api.services.engine, "signals") == 1
+
+
+def test_an_override_never_waives_the_level_chain(api):
+    """A candidate with no valid levels has no prices to trade, whatever the operator asks for."""
+    candidate_id, _ = seed_with_levels(api.services.engine, levels=None)
+    response = api.client.post(f"/research/candidates/{candidate_id}/promote", json={"override": True})
+    assert response.status_code == 409
+    assert response.json()["error"]["detail"]["errors"] == ["NO_TRADABLE_LEVELS"]
+    assert count(api.services.engine, "signals") == 0
+
+
+def test_promoting_an_unknown_candidate_is_a_clean_404(api):
+    response = api.client.post("/research/candidates/9999/promote", json={"override": True})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "RESEARCH_CANDIDATE_NOT_FOUND"

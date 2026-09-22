@@ -22,6 +22,7 @@ is simply not promotable.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from decimal import Decimal
 from typing import Any
@@ -42,6 +43,12 @@ EXPECTANCY_BELOW_MINIMUM = "EXPECTANCY_BELOW_MINIMUM"
 WIN_RATE_BELOW_MINIMUM = "WIN_RATE_BELOW_MINIMUM"
 ML_PROBABILITY_REQUIRED = "ML_PROBABILITY_REQUIRED"
 ML_PROBABILITY_BELOW_MINIMUM = "ML_PROBABILITY_BELOW_MINIMUM"
+NO_TRADABLE_LEVELS = "NO_TRADABLE_LEVELS"
+
+# A promotion the operator forced past this policy. It is a distinct `source` rather than a flag inside the
+# thesis so that one SQL predicate separates what the engine decided from what a person overruled: the
+# observation report, the metrics and every future read can tell the two apart without parsing JSON.
+MANUAL_SOURCE = "manual_promotion"
 
 
 @dataclass(frozen=True)
@@ -172,4 +179,104 @@ def decide(
         policy=policy.snapshot(),
         client_signal_id=candidate.client_signal_id,
         body=None if errors else signal_body(candidate, policy=policy),
+    )
+
+
+def stored_promotion_errors(
+    row: Mapping[str, Any],
+    *,
+    evidence: BacktestStats | None = None,
+    policy: PromotionPolicy = DEFAULT_POLICY,
+) -> tuple[str, ...]:
+    """`promotion_errors` for a candidate read back from `setup_candidates`, in the same order and codes.
+
+    A stored row carries the judged facts already — score, the level chain and its validity, any model
+    probability — so judging it needs no reconstruction of the detection, the features or the score object
+    that produced it. The two paths must agree: `tests/research/test_setups.py` pins that they do.
+    """
+    errors: list[str] = []
+    score = Decimal(str(row["deterministic_score"]))
+    if score < policy.min_deterministic_score:
+        errors.append(SCORE_BELOW_MINIMUM)
+    if row.get("entry_zone_low") is None:
+        errors.append(NO_LEVELS)
+    elif not row.get("levels_valid"):
+        errors.append(INVALID_LEVELS)
+    if evidence is None:
+        errors.append(NOT_VALIDATED)
+    else:
+        if evidence.samples < policy.min_backtest_samples:
+            errors.append(INSUFFICIENT_BACKTEST_SAMPLES)
+        if evidence.expectancy_r is None or evidence.expectancy_r <= policy.min_expectancy_r:
+            errors.append(EXPECTANCY_BELOW_MINIMUM)
+        if policy.min_win_rate is not None and (
+            evidence.win_rate is None or evidence.win_rate < policy.min_win_rate
+        ):
+            errors.append(WIN_RATE_BELOW_MINIMUM)
+    if policy.require_ml_probability:
+        probability = row.get("ml_probability")
+        if probability is None:
+            errors.append(ML_PROBABILITY_REQUIRED)
+        elif Decimal(str(probability)) < policy.min_ml_probability:
+            errors.append(ML_PROBABILITY_BELOW_MINIMUM)
+    return tuple(errors)
+
+
+def stored_signal_body(
+    row: Mapping[str, Any],
+    *,
+    policy: PromotionPolicy = DEFAULT_POLICY,
+    thesis: Mapping[str, Any] | None = None,
+    overridden: tuple[str, ...] = (),
+    auto_order: bool = True,
+) -> dict[str, Any]:
+    """The `POST /signals` body for a stored candidate. Raises rather than emit an untradable chain.
+
+    An overridden promotion is marked twice over: `source` becomes `MANUAL_SOURCE`, and the errors that were
+    overruled are written into the thesis under `promotion_override`. The prices are the candidate's own —
+    an override waives the policy, never the level chain, because there is nothing to trade without one.
+    """
+    if row.get("entry_zone_low") is None or not row.get("levels_valid"):
+        raise ValueError(NO_TRADABLE_LEVELS)
+    document: dict[str, Any] = dict(thesis or {})
+    if overridden:
+        document["promotion_override"] = {
+            "overridden_errors": list(overridden),
+            "promotion_version": PROMOTION_VERSION,
+            "policy": policy.snapshot(),
+        }
+    return {
+        "client_signal_id": str(row["client_signal_id"]),
+        "strategy": str(row["strategy"]),
+        "strategy_version": str(row["strategy_version"]),
+        "source": MANUAL_SOURCE if overridden else RESEARCH_SOURCE,
+        "ticker": str(row["ticker"]),
+        "direction": str(row["direction"]),
+        "entry_zone_low": row["entry_zone_low"],
+        "entry_zone_high": row["entry_zone_high"],
+        "stop": row["stop"],
+        "target1": row["target1"],
+        "target2": row["target2"],
+        "valid_sessions": policy.valid_sessions,
+        "score": row["deterministic_score"],
+        "thesis": canonical_json(document),
+        "auto_order": auto_order,
+    }
+
+
+def decide_stored(
+    row: Mapping[str, Any],
+    *,
+    evidence: BacktestStats | None = None,
+    policy: PromotionPolicy = DEFAULT_POLICY,
+) -> PromotionDecision:
+    """Judge a stored candidate and, only when it passes, build its signal body. Never submits."""
+    errors = stored_promotion_errors(row, evidence=evidence, policy=policy)
+    return PromotionDecision(
+        promotion_version=PROMOTION_VERSION,
+        promotable=not errors,
+        errors=errors,
+        policy=policy.snapshot(),
+        client_signal_id=str(row["client_signal_id"]),
+        body=None if errors else stored_signal_body(row, policy=policy),
     )
