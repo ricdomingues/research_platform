@@ -335,6 +335,44 @@ def test_a_correction_supersedes_the_reading_it_invalidates(engine):
     assert retracted[0]["superseded_fact_id"] not in {row["id"] for row in still_active}
 
 
+# The reading that `correct_one_minute`'s own default corrects. Minute 209 closes the bucket ending 12:59 ET,
+# which carries no reading of its own; the reading it changes is the three-candle pattern ending 13:29 ET, two
+# buckets later. A bucket's readings are not a function of its own bars alone.
+CHANGED_BUCKET_END = "13:29"
+
+
+def test_a_correction_to_an_earlier_candle_of_a_pattern_supersedes_the_reading_it_changes(engine):
+    """A three-candle reading changes when any of its three candles does, not only its last one.
+
+    Reading the bucket's own bars alone let the corrected reading be stored while the stale one stayed active,
+    so the active view answered a single bucket with two contradictory readings and any statistic over it
+    counted that occurrence twice. That is worse than the stale row this phase set out to retire.
+    """
+    seed(engine)
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=MARKET_NOW, config=CONFIG)
+    with engine.connect() as conn:
+        before = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                                   end_ts=et(DAY, CHANGED_BUCKET_END), engine_version="candles-v1")
+    assert len(before) == 1  # one reading for this bucket to begin with
+
+    correct_one_minute(engine)  # the default: a minute two buckets before the reading it changes
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=et(DAY, "16:45"), config=CONFIG)
+
+    with engine.connect() as conn:
+        after = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15,
+                                  end_ts=et(DAY, CHANGED_BUCKET_END), engine_version="candles-v1")
+    assert len(after) == 1, "the active view holds more than one reading for a single bucket"
+    assert after[0]["pattern"] == before[0]["pattern"]
+    assert after[0]["id"] != before[0]["id"], "the corrected reading, not the stale one, is what stayed active"
+
+    rows = supersession_rows(engine)
+    assert [row["reason"] for row in rows] == [SUPERSEDED_BY_REVISION]
+    assert rows[0]["superseded_fact_id"] == before[0]["id"]
+    assert rows[0]["replacement_fact_id"] == after[0]["id"]
+
+
 def test_re_ingesting_the_same_bars_under_a_new_batch_is_not_a_correction(engine):
     """D96 again, from the other side: provenance changed and the data did not, so nothing is reconciled."""
     seed(engine)

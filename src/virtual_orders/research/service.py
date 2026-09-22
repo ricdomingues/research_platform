@@ -44,9 +44,15 @@ from virtual_orders.evaluator.outcomes import ERROR_PREFIX
 from virtual_orders.marketdata.asof import acquire_data_as_of, floor_minute, read_bars_as_of
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.research.backtest import direction_of, prior_context
-from virtual_orders.research.candlesticks import DEFAULT_THRESHOLDS, ENGINE_VERSION, PatternThresholds, detect_at
+from virtual_orders.research.candlesticks import (
+    DEFAULT_THRESHOLDS,
+    ENGINE_VERSION,
+    MAX_PATTERN_CANDLES,
+    PatternThresholds,
+    detect_at,
+)
 from virtual_orders.research.features import build_snapshot
-from virtual_orders.research.identity import candle_input_hash
+from virtual_orders.research.identity import candles_input_hash
 from virtual_orders.research.indicators import IndicatorSeries, compute_series
 from virtual_orders.research.levels import DEFAULT_POLICY, LevelPolicy, propose_levels
 from virtual_orders.research.market_structure import (
@@ -326,7 +332,11 @@ def _scan_one(
                 # Every later candle of this series is newer, so none of them is settled either. Leaving the
                 # resume watermark where it is means this bucket is read again next scan, with its real shape.
                 break
-            input_hash = candle_input_hash(bars, candle)
+            # Identity of everything a reading at this bucket can be derived from: the bucket itself and the
+            # candles its longest supported pattern reaches back over. Narrowing this to the bucket's own bars
+            # let a correction to an earlier contributing candle change the reading while the guard below
+            # called the input unchanged, leaving both the stale and the corrected reading active at once.
+            input_hash = candles_input_hash(bars, candles[max(0, index - MAX_PATTERN_CANDLES + 1) : index + 1])
             found = detect_at(
                 candles[: index + 1], index,
                 prior=prior_context(candles, index, lookback=config.prior_lookback),
@@ -357,9 +367,11 @@ def _scan_one(
                     candidates += int(added)
             if not already_read:
                 continue  # a bucket read for the first time has no earlier reading of itself to reconcile
-            # A revisited bucket. Only a genuine change in the DATA is a reason to reconcile: an identical
-            # re-ingestion under a new batch id is a non-event (D96). The new readings are already stored, so
-            # the active view here holds both the stale rows and the ones that replace them.
+            # A revisited bucket. Only a genuine change in the DATA behind its readings is a reason to
+            # reconcile: an identical re-ingestion under a new batch id is a non-event (D96). Reconciling when
+            # nothing changed is harmless — identical readings match the stored ones and nothing is written —
+            # so the comparison errs wide. The new readings are already stored, so the active view here holds
+            # both the stale rows and the ones that replace them.
             stored_rows = active_detections(
                 conn, ticker=ticker, timeframe=timeframe, end_ts=candle.end_ts,
                 engine_version=ENGINE_VERSION,

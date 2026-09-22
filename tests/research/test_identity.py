@@ -11,6 +11,7 @@ from virtual_orders.research.identity import (
     bars_content_hash,
     candle_input_bars,
     candle_input_hash,
+    candles_input_hash,
 )
 from virtual_orders.research.models import Candle, Timeframe
 
@@ -61,3 +62,35 @@ def test_only_the_bars_inside_the_candle_count():
 def test_order_is_normalised_so_read_order_cannot_change_identity():
     series = [bar(index) for index in range(15)]
     assert bars_content_hash(list(reversed(series))) == bars_content_hash(series)
+
+
+def later_candle(offset_minutes: int, minutes: int = 15) -> Candle:
+    start = datetime(2026, 9, 21, 13, 30, tzinfo=UTC) + timedelta(minutes=offset_minutes)
+    return Candle(
+        timeframe=Timeframe.M15, ts=start, end_ts=start + timedelta(minutes=minutes - 1),
+        session_day=start.date(), open=Decimal("10.00"), high=Decimal("10.50"), low=Decimal("9.50"),
+        close=Decimal("10.00"), volume=Decimal("15000"), minutes_expected=minutes,
+        minutes_present=minutes, truncated=False,
+    )
+
+
+def test_a_window_of_one_candle_is_that_candle():
+    series = [bar(index) for index in range(30)]
+    assert candles_input_hash(series, [candle()]) == candle_input_hash(series, candle())
+
+
+def test_a_window_covers_every_bar_of_every_candle_in_it():
+    series = [bar(index) for index in range(45)]
+    window = [candle(), later_candle(15), later_candle(30)]
+    assert candles_input_hash(series, window) == bars_content_hash(series)
+
+
+def test_correcting_a_bar_in_an_earlier_candle_of_the_window_changes_its_identity():
+    """The whole reason the window exists: a reading at the last bucket depends on the earlier ones too."""
+    original = [bar(index) for index in range(45)]
+    corrected = [bar(3, close="10.25") if index == 3 else bar(index) for index in range(45)]
+    window = [candle(), later_candle(15), later_candle(30)]
+    # The corrected minute falls in the FIRST candle of the window, and the last candle's own bars are
+    # untouched — which is exactly the case the single-candle hash could not see.
+    assert candle_input_hash(original, later_candle(30)) == candle_input_hash(corrected, later_candle(30))
+    assert candles_input_hash(original, window) != candles_input_hash(corrected, window)

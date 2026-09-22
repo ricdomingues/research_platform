@@ -37,6 +37,22 @@ def candle_input_bars(bars: Sequence[Bar], candle: Candle) -> list[Bar]:
     )
 
 
+def candles_input_hash(bars: Sequence[Bar], candles: Sequence[Candle]) -> str:
+    """Identity of the data behind a window of candles, taken together.
+
+    A reading is rarely a function of one bucket: a three-candle pattern at bucket N is derived from buckets
+    N-2 through N, so a vendor correction to any of them changes what the engine says at N. Hashing only the
+    bucket's own bars made such a correction invisible, and the corrected reading was then stored beside the
+    stale one with nothing marking either as retired.
+
+    Buckets do not overlap, so this is the identity of their bars taken as one set; `bars_content_hash` sorts,
+    so the order the windows are assembled in cannot change the answer.
+    """
+    return bars_content_hash([
+        item for candle in candles for item in candle_input_bars(bars, candle)
+    ])
+
+
 def candle_input_hash(bars: Sequence[Bar], candle: Candle) -> str:
     """Identity of the data behind one candle."""
-    return bars_content_hash(candle_input_bars(bars, candle))
+    return candles_input_hash(bars, [candle])
