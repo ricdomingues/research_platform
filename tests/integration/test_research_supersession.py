@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -110,3 +111,46 @@ def test_a_statistic_pinned_to_a_revision_still_resolves_after_a_later_one_exist
         resolved = revision_as_of(conn, dataset_id=dataset_id,
                                   as_of=datetime(2026, 9, 21, 23, 0, tzinfo=UTC))
     assert resolved == early
+
+
+def test_concurrent_open_revision_is_serialized_by_advisory_lock(engine):
+    """Two concurrent callers opening revisions for the same dataset both succeed with distinct numbers."""
+    with engine.begin() as conn:
+        dataset_id = ensure_dataset(conn, **DATASET)
+
+    results = {}
+    errors = {}
+    barrier = threading.Barrier(2)  # synchronize threads to start at the same time
+
+    def open_revision_from_thread(thread_id: int) -> None:
+        try:
+            barrier.wait()  # wait for both threads to be ready
+            with engine.begin() as conn:
+                revision_id = open_revision(
+                    conn, dataset_id=dataset_id,
+                    data_as_of=datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
+                    manifest_hash=f"hash_{thread_id}"
+                )
+                results[thread_id] = revision_id
+        except Exception as e:
+            errors[thread_id] = e
+
+    thread1 = threading.Thread(target=open_revision_from_thread, args=(1,))
+    thread2 = threading.Thread(target=open_revision_from_thread, args=(2,))
+    thread1.start()
+    thread2.start()
+    thread1.join()
+    thread2.join()
+
+    # Both threads should succeed with no errors
+    assert not errors, f"Unexpected errors: {errors}"
+    assert len(results) == 2
+    assert results[1] != results[2]
+
+    # Verify revision numbers are 1 and 2 in the database
+    with engine.connect() as conn:
+        numbers = sorted(conn.execute(text(
+            "SELECT revision_number FROM research_dataset_revisions WHERE dataset_id = :dataset_id"
+            " ORDER BY revision_number"
+        ), {"dataset_id": dataset_id}).scalars())
+    assert numbers == [1, 2]

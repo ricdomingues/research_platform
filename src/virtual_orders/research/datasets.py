@@ -11,8 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Connection, and_, func, select
+from sqlalchemy import Connection, and_, func, select, text
 
+from virtual_orders.storage.database import RESEARCH_DATASET_LOCK_KEY
 from virtual_orders.storage.tables import research_dataset_revisions, research_datasets
 
 OPERATIONAL_DATASET_NAME = "OPERATIONAL_ALPACA_IEX_1M"
@@ -33,6 +34,7 @@ def ensure_dataset(
     data_availability_bias: str = "PRESENT",
 ) -> UUID:
     """The dataset family, created once. Both biases default to PRESENT: claiming their absence needs proof."""
+    conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": RESEARCH_DATASET_LOCK_KEY})
     existing: UUID | None = conn.execute(
         select(research_datasets.c.dataset_id).where(and_(
             research_datasets.c.name == name,
@@ -56,6 +58,7 @@ def open_revision(
     conn: Connection, *, dataset_id: UUID, data_as_of: datetime, manifest_hash: str
 ) -> UUID:
     """Record a new revision of a dataset. Revision numbers are dense and never reused."""
+    conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": RESEARCH_DATASET_LOCK_KEY})
     if data_as_of.tzinfo is None:
         raise ValueError("data_as_of must be timezone-aware")
     last: int | None = conn.execute(
