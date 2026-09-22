@@ -53,7 +53,8 @@ PLATFORM_PURE_MODULES = [
     # Plan 5: the research engines are pure calculation over values handed to them. Only `repository.py`,
     # `service.py` and `ml/registry.py` touch the database, and they are deliberately absent from this list.
     "virtual_orders/research/models.py", "virtual_orders/research/timeframes.py",
-    "virtual_orders/research/candlesticks.py", "virtual_orders/research/indicators.py",
+    "virtual_orders/research/candlesticks.py", "virtual_orders/research/identity.py",
+    "virtual_orders/research/indicators.py",
     "virtual_orders/research/market_structure.py", "virtual_orders/research/features.py",
     "virtual_orders/research/labels.py", "virtual_orders/research/levels.py",
     "virtual_orders/research/scoring.py", "virtual_orders/research/setups.py",
