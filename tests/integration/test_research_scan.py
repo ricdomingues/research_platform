@@ -223,3 +223,43 @@ def test_the_scan_never_needs_a_market_data_gateway():
 
     parameters = set(inspect.signature(run_research_scan).parameters)
     assert parameters == {"engine", "code_version", "price_source", "market_now", "config", "tickers"}
+
+
+def correct_one_minute(engine, ticker="AAPL", minute_index=209, raise_high=0.10):
+    """A vendor correction: the same minute comes back later with a different high.
+
+    `bars_1m` keeps both versions and `read_bars_as_of` prefers the newer batch, so the candle containing this
+    minute genuinely changes shape for any scan that reads it again.
+    """
+    original = marching_bars(ticker)[minute_index]
+    corrected = RawBar(
+        ticker, original.ts, original.open, original.high + Decimal(str(raise_high)),
+        original.low, original.close, original.volume,
+    )
+    backdated_batch(engine, ticker, [corrected], ingested_at=et(DAY, "16:40"))
+
+
+def test_a_corrected_bar_reopens_the_candle_a_previous_scan_already_read(engine):
+    """A candle that changes after it was scanned is read again and recorded beside its stale reading.
+
+    The canary produced exactly this row: a detection written from a candle whose bars were still arriving,
+    frozen forever because `last_detection_end_ts` had advanced past its own candle. `settled()` stops the
+    engine reading a bucket too early, but it cannot help a bucket the vendor corrects afterwards. Without a
+    bounded revisit the stale row is permanent, and over a ten-year backfill that class of row is silent
+    statistical error rather than one wrong candle.
+
+    Nothing is overwritten: the corrected reading lands beside the original, which is what the uniqueness on
+    `evidence_hash` was built for.
+    """
+    seed(engine)
+    first = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                              market_now=MARKET_NOW, config=CONFIG)
+    before = count(engine, "pattern_detections")
+    assert first.detections > 0
+
+    correct_one_minute(engine)
+    second = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                               market_now=et(DAY, "16:45"), config=CONFIG)
+
+    assert second.detections > 0, "the corrected candle was never re-examined"
+    assert count(engine, "pattern_detections") > before  # recorded beside the stale reading, not instead of it
