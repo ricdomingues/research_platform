@@ -20,6 +20,7 @@ from virtual_orders.evaluator.opening import run_opening
 from virtual_orders.evaluator.quality import run_end_of_day
 from virtual_orders.evaluator.recheck import RecheckReport, run_quality_recheck
 from virtual_orders.readmodels.health import build_health_report
+from virtual_orders.research.service import run_research_scan
 from virtual_orders.services import Services
 from virtual_orders.worker.schedule import (
     DELIVER_ALERTS,
@@ -27,6 +28,7 @@ from virtual_orders.worker.schedule import (
     HEALTH_WATCH,
     LIVE_CYCLE,
     OPENING,
+    RESEARCH_SCAN,
     WATCHLIST,
     live_session,
     session_closed_today,
@@ -70,6 +72,7 @@ class WorkerJobs:
         self._jobs: dict[str, Callable[[], JobResult]] = {
             LIVE_CYCLE: self.live_cycle, WATCHLIST: self.watchlist, OPENING: self.opening,
             END_OF_DAY: self.end_of_day, HEALTH_WATCH: self.health_watch, DELIVER_ALERTS: self.deliver_alerts,
+            RESEARCH_SCAN: self.research_scan,
         }
 
     def _now(self) -> datetime:
@@ -122,6 +125,25 @@ class WorkerJobs:
         if report.ingest_failures:  # recorded in the WATCHLIST run detail, like LIVE ingest failures
             return JobResult(WATCHLIST, True, f"COMPLETED_WITH_INGEST_FAILURES:{len(report.ingest_failures)}")
         return JobResult(WATCHLIST, True, "COMPLETED")
+
+    def research_scan(self) -> JobResult:
+        """Plan 5 (D91): candlestick research over stored bars only.
+
+        Its own job, never folded into LIVE_CYCLE: it reads many sessions of persisted bars and must never be
+        able to delay a fill. It calls no provider, and a failure is contained by `runner` like any other job.
+        """
+        now = self._now()
+        if live_session(now) is None:
+            return JobResult(RESEARCH_SCAN, False, "OUTSIDE_SESSION")
+        s = self._services
+        report = run_research_scan(s.engine, code_version=s.code_version, price_source=s.price_source,
+                                   market_now=now)
+        if report.run_id is None:
+            return JobResult(RESEARCH_SCAN, False, report.skipped or "SKIPPED")
+        if report.failures:  # recorded per ticker and timeframe in the run detail
+            return JobResult(RESEARCH_SCAN, True, f"COMPLETED_WITH_FAILURES:{len(report.failures)}")
+        return JobResult(RESEARCH_SCAN, True,
+                         f"COMPLETED DETECTIONS:{report.detections} CANDIDATES:{report.candidates}")
 
     def opening(self) -> JobResult:
         now = self._now()

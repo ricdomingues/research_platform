@@ -1,0 +1,20 @@
+{
+  "markers": [
+    {
+      "candidate_id": 1,
+      "deterministic_score": "0.555",
+      "direction": "BULLISH",
+      "event_key": "BULLISH_ENGULFING:2025-11-25T21:14:00+00:00",
+      "ml_probability": null,
+      "pattern": "BULLISH_ENGULFING",
+      "pattern_score": "0.7",
+      "price": null,
+      "seq": 1,
+      "timeframe": "15m",
+      "ts": "2025-11-25T21:14:00+00:00",
+      "type": "BULLISH_ENGULFING"
+    }
+  ],
+  "ticker": "AAPL",
+  "timeframe": "15m"
+}

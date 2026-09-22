@@ -23,7 +23,13 @@ OPENING = "opening"
 END_OF_DAY = "end_of_day"
 HEALTH_WATCH = "health_watch"
 DELIVER_ALERTS = "deliver_alerts"
+RESEARCH_SCAN = "research_scan"
 WORKER_LOCK = "worker_lock"
+
+# Plan 5 (D91): the research scan runs on its own cadence, on the quarter hour, a moment after the 15-minute
+# candles it reads have closed. It is never folded into LIVE_CYCLE: order evaluation is the critical path, and
+# a scan that reads thirty sessions of stored bars must never be able to delay a fill.
+RESEARCH_SCAN_MINUTES = "0,15,30,45"
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,8 @@ def build_schedule(eval_interval_minutes: int) -> tuple[JobSpec, ...]:
         JobSpec(END_OF_DAY, CronTrigger(day_of_week="mon-fri", hour="16,18", minute=30, timezone=MARKET_TZ)),
         JobSpec(HEALTH_WATCH, IntervalTrigger(minutes=eval_interval_minutes, timezone=MARKET_TZ)),
         JobSpec(DELIVER_ALERTS, IntervalTrigger(minutes=1, timezone=MARKET_TZ)),
+        JobSpec(RESEARCH_SCAN, CronTrigger(day_of_week="mon-fri", hour="9-16",
+                                           minute=RESEARCH_SCAN_MINUTES, timezone=MARKET_TZ)),
     )
 
 

@@ -130,6 +130,67 @@ def test_the_client_reads_the_recorded_observation_responses():
     assert [day["session_day"] for day in summary["days"]] == ["2025-11-25", "2025-11-26"]
 
 
+def test_the_client_reads_the_recorded_research_responses():
+    versions = serving("research_versions").research_versions()
+    assert versions["engine_version"] == "candles-v1" and len(versions["supported_patterns"]) == 15
+    assert versions["supported_timeframes"] == ["5m", "15m", "30m", "1h", "4h", "1d"]
+    candidates = serving("research_candidates").research_candidates(ticker="AAPL")
+    assert [item["pattern"] for item in candidates["candidates"]] == ["BULLISH_ENGULFING"]
+    assert "not a probability" in candidates["score_interpretation"]
+    assert [item["pattern"] for item in serving("research_detections").research_detections()] == [
+        "BULLISH_ENGULFING"]
+    assert [item["kind"] for item in serving("research_runs").research_runs()] == ["BACKTEST", "RESEARCH_SCAN"]
+    assert serving("research_models").research_models() == []
+    markers = serving("research_markers").research_markers("AAPL", "15m", "2025-11-25T14:00:00+00:00",
+                                                           "2025-11-26T05:00:00+00:00")
+    assert [item["type"] for item in markers] == ["BULLISH_ENGULFING"]
+    assert [item["split"] for item in serving("research_backtests").research_backtests()] == ["ALL"]
+
+
+def test_research_views_and_markers_from_the_recorded_responses():
+    from dashboard.charts import add_pattern_markers, candlestick_figure
+    from dashboard.viewmodels import (
+        backtest_rows,
+        candidate_view,
+        levels_rows,
+        model_rows,
+        research_run_rows,
+        scanner_rows,
+    )
+
+    candidates = load("research_candidates")["candidates"]
+    (row,) = scanner_rows(candidates)
+    assert (row["Ticker"], row["Padrão"], row["Direção"]) == ("AAPL", "Engolfo de alta", "LONG")
+    assert row["Tendência"] == "baixa" and row["Probabilidade ML"] == "—"
+    assert row["Score do padrão"] == "0.56"  # 0.555 rendered at two places
+    # This candidate was recorded without a level chain, so the levels table says so instead of inventing one.
+    (levels,) = levels_rows(candidates)
+    assert (levels["Válido"], levels["Zona"], levels["Stop"]) == ("não", "—–—", "—")
+
+    view = candidate_view(load("research_candidate"))
+    assert view.title == "AAPL · Engolfo de alta · 15m"
+    assert view.probability == "—" and view.score == "0.56"
+    assert {"Evidência": "previous_direction", "Valor": "BEARISH"} in view.evidence
+    assert "not a probability" in view.interpretation
+
+    (backtest,) = backtest_rows(load("research_backtests")["backtests"])
+    assert backtest["Padrão"] == "Engolfo de alta" and backtest["Split"] == "ALL"
+    assert backtest["Win rate (n)"].endswith(f"(n={backtest['Resolvidos']})")  # never a rate without its sample
+
+    runs = research_run_rows(load("research_runs")["runs"])
+    assert {item["Tipo"] for item in runs} == {"RESEARCH_SCAN", "BACKTEST"}
+    assert all(item["Status"] == "COMPLETED" for item in runs)
+    assert model_rows(load("research_models")["models"]) == []
+
+    markers = load("research_markers")["markers"]
+    figure = add_pattern_markers(candlestick_figure(load("market_bars")["bars"],
+                                                    load("market_bars")["vwap"], title="AAPL"), markers)
+    # Recorded without levels, so the marker carries no price and is drawn as a line, never as a point at zero.
+    assert markers[0]["price"] is None
+    assert "BULLISH_ENGULFING" in {shape.name for shape in figure.layout.shapes}
+    assert not [trace for trace in figure.data if getattr(trace, "mode", None) == "markers+text"]
+
+
 def test_observation_views_from_the_recorded_responses():
     view = observation_view(load("observation_report"))
     cards = {card.label: card.value for card in view.cards}

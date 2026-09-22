@@ -7,6 +7,7 @@ dependencies = [
     "httpx>=0.28",
     "plotly>=5.24,<7",
     "streamlit>=1.40,<2",
+    "streamlit-lightweight-charts>=0.7.20,<0.8",
 ]
 
 [dependency-groups]
@@ -45,6 +46,7 @@ strict = true
 packages = ["dashboard"]
 
 [[tool.mypy.overrides]]
-# Third-party library without type information (Plan 3C, D40): figures are built and asserted structurally.
-module = ["plotly", "plotly.*"]
+# Third-party libraries without type information (Plan 3C, D40; D94): the configuration handed to each of
+# them is built by pure functions here and asserted structurally in the tests.
+module = ["plotly", "plotly.*", "streamlit_lightweight_charts", "streamlit_lightweight_charts.*"]
 ignore_missing_imports = true

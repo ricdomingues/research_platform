@@ -43,7 +43,7 @@ def test_run_worker_registers_every_job_then_releases_the_lock_and_closes(worker
     scheduler = FakeScheduler()
     assert run_worker(worker.services, scheduler_factory=lambda: scheduler, install_signal_handlers=False) == 0
     assert [job[0] for job in scheduler.jobs] == ["live_cycle", "watchlist", "opening", "end_of_day", "health_watch",
-                                                  "deliver_alerts", "worker_lock"]
+                                                  "deliver_alerts", "research_scan", "worker_lock"]
     assert all(job[3] == job[0] and job[4:] == (1, True, 60) for job in scheduler.jobs)
     assert scheduler.started and worker.closed == [1]
     assert_lock_is_free(worker.services.engine)

@@ -227,3 +227,63 @@ class ApiClient:
 
     def real_portfolio(self) -> JsonObject:
         return self._request("GET", "/portfolio/real")
+
+    # Research (Plan 5). Read-only: the dashboard looks at what the scan recorded and never starts one.
+    def research_versions(self) -> JsonObject:
+        return self._request("GET", "/research/versions")
+
+    def research_runs(self, *, kind: str | None = None, limit: int = 20) -> list[JsonObject]:
+        return list(self._request("GET", "/research/runs", params={"kind": kind, "limit": limit})["runs"])
+
+    def research_candidates(
+        self,
+        *,
+        ticker: str | None = None,
+        timeframe: str | None = None,
+        pattern: str | None = None,
+        direction: str | None = None,
+        min_score: Decimal | None = None,
+        levels_valid: bool | None = None,
+        limit: int = 200,
+    ) -> JsonObject:
+        """The whole envelope, not just the rows: the score's documented meaning travels with the numbers."""
+        return self._request("GET", "/research/candidates", params={
+            "ticker": ticker, "timeframe": timeframe, "pattern": pattern, "direction": direction,
+            "min_score": min_score, "levels_valid": levels_valid, "limit": limit,
+        })
+
+    def research_candidate(self, candidate_id: int) -> JsonObject:
+        return self._request("GET", f"/research/candidates/{_segment(str(candidate_id))}")
+
+    def research_detections(
+        self, *, ticker: str | None = None, timeframe: str | None = None, pattern: str | None = None,
+        limit: int = 200,
+    ) -> list[JsonObject]:
+        return list(self._request("GET", "/research/detections", params={
+            "ticker": ticker, "timeframe": timeframe, "pattern": pattern, "limit": limit,
+        })["detections"])
+
+    def research_markers(
+        self, ticker: str, timeframe: str, start: datetime | str, end: datetime | str, *, limit: int = 500
+    ) -> list[JsonObject]:
+        return list(self._request("GET", "/research/markers", params={
+            "ticker": ticker, "timeframe": timeframe, "from": start, "to": end, "limit": limit,
+        })["markers"])
+
+    def promote_candidate(
+        self, candidate_id: int, *, override: bool = False, auto_order: bool = True
+    ) -> JsonObject:
+        """Promote one candidate through the engine's own boundary. A refusal raises with its reasons."""
+        return self._request("POST", f"/research/candidates/{int(candidate_id)}/promote",
+                             body={"override": override, "auto_order": auto_order})
+
+    def research_backtests(
+        self, *, pattern: str | None = None, timeframe: str | None = None, split: str | None = None,
+        ticker: str | None = None, limit: int = 100,
+    ) -> list[JsonObject]:
+        return list(self._request("GET", "/research/backtests", params={
+            "pattern": pattern, "timeframe": timeframe, "split": split, "ticker": ticker, "limit": limit,
+        })["backtests"])
+
+    def research_models(self, *, limit: int = 20) -> list[JsonObject]:
+        return list(self._request("GET", "/research/models", params={"limit": limit})["models"])

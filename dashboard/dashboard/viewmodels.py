@@ -606,3 +606,211 @@ def observation_day_rows(summary: Mapping[str, Any]) -> list[dict[str, str]]:
          "Fills": str(day["fills"]), "Trades": str(day["trades"]), "R": fmt_r(day["sum_r"])}
         for day in summary["days"]
     ]
+
+
+# --- Research (Plan 5) ------------------------------------------------------------------------------------
+RESEARCH_ISOLATION_NOTICE = (
+    "Observações de pesquisa: nenhuma delas cria sinal ou ordem. A promoção para sinal em paper é uma decisão "
+    "separada e explícita, pelo intake existente.")
+RESEARCH_NO_MODEL = "Nenhum modelo aprovado ainda: a coluna de probabilidade fica vazia até existir um."
+PATTERN_LABELS = {
+    "DOJI": "Doji", "DRAGONFLY_DOJI": "Doji libélula", "GRAVESTONE_DOJI": "Doji lápide", "HAMMER": "Martelo",
+    "HANGING_MAN": "Homem enforcado", "INVERTED_HAMMER": "Martelo invertido", "SHOOTING_STAR": "Estrela cadente",
+    "BULLISH_ENGULFING": "Engolfo de alta", "BEARISH_ENGULFING": "Engolfo de baixa",
+    "PIERCING_LINE": "Linha penetrante", "DARK_CLOUD_COVER": "Nuvem negra", "MORNING_STAR": "Estrela da manhã",
+    "EVENING_STAR": "Estrela da tarde", "THREE_WHITE_SOLDIERS": "Três soldados brancos",
+    "THREE_BLACK_CROWS": "Três corvos negros",
+}
+TREND_LABELS = {"UP": "alta", "DOWN": "baixa", "SIDEWAYS": "lateral", "UNKNOWN": EMPTY}
+BREAKOUT_LABELS = {"ABOVE_RESISTANCE": "acima da resistência", "BELOW_SUPPORT": "abaixo do suporte",
+                   "INSIDE": "dentro da faixa", "UNKNOWN": EMPTY}
+
+
+def pattern_label(pattern: Any) -> str:
+    return PATTERN_LABELS.get(str(pattern), str(pattern))
+
+
+def fmt_probability(value: Any) -> str:
+    """A probability is shown as a percentage, or as EMPTY when no model has scored the candidate."""
+    return EMPTY if value is None else f"{_decimal(value) * 100:.1f}%"
+
+
+def fmt_score(value: Any) -> str:
+    return EMPTY if value is None else f"{_decimal(value):.2f}"
+
+
+def fmt_signed_pct(value: Any) -> str:
+    return EMPTY if value is None else f"{_decimal(value):+.2f}%"
+
+
+def _feature(candidate: Mapping[str, Any], name: str) -> Any:
+    return (candidate.get("features") or {}).get(name)
+
+
+def scanner_rows(candidates: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The scanner table of spec 21, in the order the brief lists its columns."""
+    return [{
+        "Ticker": str(c["ticker"]), "Timeframe": str(c["timeframe"]), "Padrão": pattern_label(c["pattern"]),
+        "Direção": str(c["direction"]), "Score do padrão": fmt_score(c.get("deterministic_score")),
+        "Tendência": TREND_LABELS.get(str(_feature(c, "short_term_trend")), EMPTY),
+        "RSI": fmt_decimal(_feature(c, "rsi14"), 1),
+        "Volume relativo": fmt_decimal(_feature(c, "relative_volume")),
+        "Pressão (estimativa)": str(_feature(c, "pressure_side") or EMPTY),
+        "Distância VWAP": fmt_signed_pct(_feature(c, "vwap_distance_pct")),
+        "Distância suporte": fmt_signed_pct(_feature(c, "support_distance_pct")),
+        "Detectado em": fmt_ts(c.get("detected_at")),
+        "Probabilidade ML": fmt_probability(c.get("ml_probability")),
+    } for c in candidates]
+
+
+def levels_rows(candidates: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Proposed levels beside the reason a chain was rejected: an invalid chain is shown, never hidden."""
+    return [{
+        "Ticker": str(c["ticker"]), "Padrão": pattern_label(c["pattern"]), "Direção": str(c["direction"]),
+        "Zona": f"{fmt_price(c.get('entry_zone_low'))}–{fmt_price(c.get('entry_zone_high'))}",
+        "Stop": fmt_price(c.get("stop")), "Alvo 1": fmt_price(c.get("target1")),
+        "Alvo 2": fmt_price(c.get("target2")), "R:R": fmt_decimal(c.get("risk_reward")),
+        "Válido": "sim" if c.get("levels_valid") else "não",
+        "Motivos": ", ".join(str(code) for code in (c.get("levels_errors") or [])) or EMPTY,
+    } for c in candidates]
+
+
+def marker_label(marker: Mapping[str, Any]) -> str:
+    """Spec 22: the label a detected pattern carries on the chart."""
+    return (f"{pattern_label(marker.get('pattern'))} · {fmt_score(marker.get('pattern_score'))} · "
+            f"{marker.get('timeframe')}")
+
+
+@dataclass(frozen=True)
+class CandidateView:
+    title: str
+    direction: str
+    detected_at: str
+    score: str
+    probability: str
+    evidence: list[dict[str, str]]
+    context: list[dict[str, str]]
+    levels: list[dict[str, str]]
+    interpretation: str
+    pressure_disclaimer: str
+
+
+def _pairs_table(values: Mapping[str, Any], key_name: str = "Campo") -> list[dict[str, str]]:
+    return [{key_name: str(name), "Valor": EMPTY if value is None else str(value)}
+            for name, value in sorted(values.items())]
+
+
+def candidate_view(payload: Mapping[str, Any]) -> CandidateView:
+    candidate = payload["candidate"]
+    detection = payload.get("detection") or {}
+    thesis = candidate.get("thesis_document") or {}
+    features = candidate.get("feature_document") or {}
+    levels = thesis.get("levels") or {}
+    return CandidateView(
+        title=f"{candidate['ticker']} · {pattern_label(candidate['pattern'])} · {candidate['timeframe']}",
+        direction=str(candidate["direction"]),
+        detected_at=fmt_ts(candidate.get("detected_at")),
+        score=fmt_score(candidate.get("deterministic_score")),
+        probability=fmt_probability(candidate.get("ml_probability")),
+        evidence=_pairs_table(detection.get("evidence") or {}, "Evidência"),
+        context=[
+            {"Métrica": "Tendência curta", "Valor": TREND_LABELS.get(str(features.get("short_term_trend")), EMPTY)},
+            {"Métrica": "Tendência média", "Valor": TREND_LABELS.get(str(features.get("medium_term_trend")), EMPTY)},
+            {"Métrica": "Rompimento", "Valor": BREAKOUT_LABELS.get(str(features.get("breakout")), EMPTY)},
+            {"Métrica": "RSI 14", "Valor": fmt_decimal(features.get("rsi14"), 1)},
+            {"Métrica": "ATR 14", "Valor": fmt_price(features.get("atr14"))},
+            {"Métrica": "Volume relativo", "Valor": fmt_decimal(features.get("relative_volume"))},
+            {"Métrica": "CMF (estimativa)", "Valor": fmt_price(features.get("cmf"))},
+            {"Métrica": "Distância VWAP", "Valor": fmt_signed_pct(features.get("vwap_distance_pct"))},
+            {"Métrica": "Distância suporte", "Valor": fmt_signed_pct(features.get("support_distance_pct"))},
+            {"Métrica": "Distância resistência",
+             "Valor": fmt_signed_pct(features.get("resistance_distance_pct"))},
+        ],
+        levels=[] if not levels else [{
+            "Zona": f"{fmt_price(levels.get('entry_zone_low'))}–{fmt_price(levels.get('entry_zone_high'))}",
+            "Stop": fmt_price(levels.get("stop")), "Alvo 1": fmt_price(levels.get("target1")),
+            "Alvo 2": fmt_price(levels.get("target2")), "R:R": fmt_decimal(levels.get("risk_reward")),
+            "Válido": "sim" if levels.get("valid") else "não",
+            "Motivos": ", ".join(str(code) for code in (levels.get("errors") or [])) or EMPTY,
+        }],
+        interpretation=str(payload.get("score_interpretation") or EMPTY),
+        pressure_disclaimer=str(features.get("pressure_disclaimer") or ""),
+    )
+
+
+def backtest_rows(backtests: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Every rate beside the sample it came from: no percentage is ever shown without its count (spec 21)."""
+    return [{
+        "Padrão": pattern_label(b["pattern"]), "Timeframe": str(b["timeframe"]),
+        "Universo": str(b.get("ticker") or "todos"), "Split": str(b["split"]),
+        "Amostras": str(b["samples"]), "Resolvidos": str(b["resolved"]),
+        "Wins": str(b["wins"]), "Losses": str(b["losses"]), "Timeouts": str(b["timeouts"]),
+        "Win rate (n)": f"{fmt_pct(b.get('win_rate'))} (n={b['resolved']})",
+        "Expectância (R)": fmt_r(b.get("expectancy_r")), "Profit factor": fmt_decimal(b.get("profit_factor")),
+        "Drawdown máx. (R)": fmt_decimal(b.get("max_drawdown_r")), "MFE": fmt_r(b.get("avg_mfe_r")),
+        "MAE": fmt_r(b.get("avg_mae_r")), "Ambíguos": str(b["ambiguous"]),
+        "Período": f"{fmt_ts(b.get('period_from'))} → {fmt_ts(b.get('period_to'))}",
+    } for b in backtests]
+
+
+def research_run_rows(runs: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    return [{
+        "Tipo": str(r["kind"]), "Status": str(r["status"]), "Início": fmt_ts(r.get("started_at")),
+        "Fim": fmt_ts(r.get("completed_at")), "data_as_of": fmt_ts(r.get("data_as_of")),
+        "Motor": str(r.get("engine_version") or EMPTY),
+        "Detecções": str((r.get("detail") or {}).get("detections", EMPTY)),
+        "Candidatos": str((r.get("detail") or {}).get("candidates", EMPTY)),
+        "Falhas": str(len((r.get("detail") or {}).get("failures", {}) or {})),
+    } for r in runs]
+
+
+def model_rows(models: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    return [{
+        "Modelo": str(m["model_name"]), "Versão": str(m["model_version"]), "Tipo": str(m["model_kind"]),
+        "Features": str(m["feature_version"]), "Labels": str(m["label_version"]),
+        "Treino": f"{fmt_ts(m.get('training_from'))} → {fmt_ts(m.get('training_to'))}",
+        "Linhas": str(m["training_rows"]),
+        "AUC (validação)": fmt_decimal((m.get("validation_metrics") or {}).get("auc"), 3),
+        "Brier (validação)": fmt_decimal((m.get("validation_metrics") or {}).get("brier"), 4),
+        "Registrado": fmt_ts(m.get("created_at")),
+    } for m in models]
+
+
+def aggregate_bars(bars: Sequence[Mapping[str, Any]], minutes: int) -> list[dict[str, Any]]:
+    """Stored 1-minute bars folded into `minutes`-wide candles, in order.
+
+    The engine's own resampling is session-aware and lives behind the scan; this is the chart's much smaller
+    need: group by wall-clock bucket so a 15m view shows 15m candles. Buckets are labelled by their first
+    minute, and a bucket with no bar simply does not appear — a missing minute is never invented.
+    """
+    if minutes < 1:
+        raise ValueError("minutes must be >= 1")
+    buckets: dict[datetime, dict[str, Any]] = {}
+    for bar in bars:
+        moment = bar["ts"] if isinstance(bar["ts"], datetime) else datetime.fromisoformat(str(bar["ts"]))
+        start = moment.replace(second=0, microsecond=0)
+        start -= timedelta(minutes=start.minute % minutes)
+        found = buckets.get(start)
+        if found is None:
+            buckets[start] = {
+                "ts": start, "open": _decimal(bar["open"]), "high": _decimal(bar["high"]),
+                "low": _decimal(bar["low"]), "close": _decimal(bar["close"]),
+                "volume": _decimal(bar.get("volume", 0)),
+            }
+            continue
+        found["high"] = max(found["high"], _decimal(bar["high"]))
+        found["low"] = min(found["low"], _decimal(bar["low"]))
+        found["close"] = _decimal(bar["close"])
+        found["volume"] += _decimal(bar.get("volume", 0))
+    return [buckets[key] for key in sorted(buckets)]
+
+
+TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 390}
+
+
+def promotion_blockers(detail: Mapping[str, Any] | None) -> list[str]:
+    """The policy reasons carried by a refused promotion, in the order the boundary reported them."""
+    if not isinstance(detail, Mapping):
+        return []
+    errors = detail.get("errors")
+    return [str(item) for item in errors] if isinstance(errors, Sequence) and not isinstance(errors, str) else []

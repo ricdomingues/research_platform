@@ -1,0 +1,44 @@
+{
+  "runs": [
+    {
+      "code_version": "test-sha",
+      "completed_at": "2025-11-25T21:34:00+00:00",
+      "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "data_as_of": "2025-11-25T21:30:00+00:00",
+      "detail": {
+        "configuration": {
+          "engine_version": "candles-v1",
+          "timeframes": [
+            "15m"
+          ]
+        }
+      },
+      "engine_version": "candles-v1",
+      "kind": "BACKTEST",
+      "run_id": "00000000-0000-4000-8000-000000000021",
+      "started_at": "2025-11-25T21:33:00+00:00",
+      "status": "COMPLETED"
+    },
+    {
+      "code_version": "test-sha",
+      "completed_at": "2025-11-25T21:32:00+00:00",
+      "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "data_as_of": "2025-11-25T21:30:00+00:00",
+      "detail": {
+        "candidates": 1,
+        "configuration": {
+          "engine_version": "candles-v1",
+          "timeframes": [
+            "15m"
+          ]
+        },
+        "detections": 1
+      },
+      "engine_version": "candles-v1",
+      "kind": "RESEARCH_SCAN",
+      "run_id": "00000000-0000-4000-8000-000000000022",
+      "started_at": "2025-11-25T21:31:00+00:00",
+      "status": "COMPLETED"
+    }
+  ]
+}

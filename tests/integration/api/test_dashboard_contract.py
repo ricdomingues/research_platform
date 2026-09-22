@@ -25,9 +25,24 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from core.domain.models import Direction
 from tests.integration.support import DAY, ROOT, flat_raw, post_json, scenario_bars, signal_body
+from tests.research.support import bullish_engulfing_after_decline
 from tests.support import et
 from virtual_orders.alerts.outbox import AlertKind, enqueue_alert
+from virtual_orders.research.backtest import build_occurrences, summarize
+from virtual_orders.research.models import Timeframe
+from virtual_orders.research.repository import (
+    ResearchRunKind,
+    ResearchRunStatus,
+    finish_run,
+    record_backtest,
+    record_candidate,
+    record_detection,
+    start_run,
+)
+from virtual_orders.research.scoring import score_setup
+from virtual_orders.research.setups import build_candidate
 from virtual_orders.storage import tables
 from virtual_orders.worker.jobs import JobResult, WorkerJobs
 
@@ -270,6 +285,46 @@ def test_dashboard_contract_matches_the_recorded_api_responses(api):
         ])
     get("observation_report", "/observation/report", day=DAY)
     get("observation_summary", "/observation/summary", **{"from": DAY, "to": NEXT})
+
+    # Plan 5 (D92): recorded after every earlier fixture, so re-recording leaves those files byte-identical.
+    # The research rows are written through the very repository the scan uses, over the scenario's own months,
+    # so the recorded shapes are the ones production produces.
+    as_of = et(DAY, "16:30")
+    (occurrence,) = [item for item in build_occurrences(bullish_engulfing_after_decline(), ticker="AAPL",
+                                                        data_as_of=as_of)
+                     if item.pattern == "BULLISH_ENGULFING"]
+    setup = build_candidate(
+        ticker="AAPL", detection=occurrence.detection, snapshot=occurrence.features,
+        score=score_setup(occurrence.detection, occurrence.features, Direction.LONG), data_as_of=as_of,
+    )
+    assert setup is not None
+    configuration = {"timeframes": ["15m"], "engine_version": "candles-v1"}
+    with api.services.engine.begin() as conn:
+        scan = start_run(conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=as_of, code_version="test-sha",
+                         engine_version="candles-v1", configuration=configuration,
+                         started_at=et(DAY, "16:31"))
+        detection_id, _ = record_detection(conn, run_id=scan.run_id, ticker="AAPL", price_source="fake_feed",
+                                           detection=occurrence.detection, data_as_of=as_of)
+        record_candidate(conn, run_id=scan.run_id, detection_id=detection_id, candidate=setup)
+        finish_run(conn, scan.run_id, ResearchRunStatus.COMPLETED, {"detections": 1, "candidates": 1},
+                   completed_at=et(DAY, "16:32"))
+        evaluation = start_run(conn, kind=ResearchRunKind.BACKTEST, data_as_of=as_of, code_version="test-sha",
+                               engine_version="candles-v1", configuration=configuration,
+                               started_at=et(DAY, "16:33"))
+        record_backtest(conn, run_id=evaluation.run_id, stats=summarize([occurrence], horizon=10),
+                        pattern="BULLISH_ENGULFING", timeframe=Timeframe.M15, split="ALL",
+                        period_from=et(DAY, "09:30"), period_to=et(DAY, "16:00"), data_as_of=as_of)
+        finish_run(conn, evaluation.run_id, ResearchRunStatus.COMPLETED, completed_at=et(DAY, "16:34"))
+
+    get("research_versions", "/research/versions")
+    get("research_runs", "/research/runs", limit=20)
+    get("research_detections", "/research/detections", ticker="AAPL", timeframe="15m")
+    candidates = get("research_candidates", "/research/candidates", limit=200)
+    get("research_candidate", f"/research/candidates/{candidates['candidates'][0]['id']}")
+    get("research_markers", "/research/markers", ticker="AAPL", timeframe="15m",
+        **{"from": et(DAY, "09:00").isoformat(), "to": et(NEXT, "00:00").isoformat()})
+    get("research_backtests", "/research/backtests", limit=100)
+    get("research_models", "/research/models", limit=20)
 
     if not RECORD:  # no stale fixture: every file in the folder comes from this walk
         assert sorted(path.stem for path in FIXTURES.glob("*.json")) == sorted(recorder.names)
