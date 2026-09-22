@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import text
 
+from virtual_orders.research.datasets import (
+    ensure_dataset,
+    open_revision,
+    revision_as_of,
+)
 from virtual_orders.storage import tables
 
 
@@ -60,3 +67,46 @@ def test_the_fact_tables_carry_an_input_content_hash(engine):
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'pattern_detections'"
         )).scalars())
     assert "input_content_hash" in columns
+
+
+DATASET = dict(
+    name="OPERATIONAL_ALPACA_IEX_1M", family_version="v1", provider="alpaca", feed="iex",
+    base_timeframe="1m", aggregation_version="timeframes-v1", calendar_version="nyse-v1",
+)
+
+
+def test_ensuring_a_dataset_twice_returns_the_same_identity(engine):
+    with engine.begin() as conn:
+        first = ensure_dataset(conn, **DATASET)
+    with engine.begin() as conn:
+        second = ensure_dataset(conn, **DATASET)
+    assert first == second
+
+
+def test_revisions_are_numbered_in_order_and_never_reused(engine):
+    with engine.begin() as conn:
+        dataset_id = ensure_dataset(conn, **DATASET)
+        first = open_revision(conn, dataset_id=dataset_id,
+                              data_as_of=datetime(2026, 9, 21, 20, 0, tzinfo=UTC), manifest_hash="aaa")
+        second = open_revision(conn, dataset_id=dataset_id,
+                               data_as_of=datetime(2026, 9, 22, 20, 0, tzinfo=UTC), manifest_hash="bbb")
+    assert first != second
+    with engine.connect() as conn:
+        numbers = list(conn.execute(text(
+            "SELECT revision_number FROM research_dataset_revisions ORDER BY revision_number"
+        )).scalars())
+    assert numbers == [1, 2]
+
+
+def test_a_statistic_pinned_to_a_revision_still_resolves_after_a_later_one_exists(engine):
+    """D102: a published number stays reproducible after the vendor corrects candles."""
+    with engine.begin() as conn:
+        dataset_id = ensure_dataset(conn, **DATASET)
+        early = open_revision(conn, dataset_id=dataset_id,
+                              data_as_of=datetime(2026, 9, 21, 20, 0, tzinfo=UTC), manifest_hash="aaa")
+        open_revision(conn, dataset_id=dataset_id,
+                      data_as_of=datetime(2026, 9, 22, 20, 0, tzinfo=UTC), manifest_hash="bbb")
+    with engine.connect() as conn:
+        resolved = revision_as_of(conn, dataset_id=dataset_id,
+                                  as_of=datetime(2026, 9, 21, 23, 0, tzinfo=UTC))
+    assert resolved == early

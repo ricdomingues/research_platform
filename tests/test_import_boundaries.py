@@ -456,8 +456,8 @@ RESEARCH_PACKAGE = "virtual_orders/research"
 # The only research modules allowed to touch the database. Everything else is pure calculation over values
 # handed to it, which is what lets the same code run a live scan and a historical backtest (Plan 5).
 RESEARCH_PERSISTENCE = frozenset({
-    "virtual_orders/research/repository.py", "virtual_orders/research/service.py",
-    "virtual_orders/research/ml/registry.py",
+    "virtual_orders/research/datasets.py", "virtual_orders/research/repository.py",
+    "virtual_orders/research/service.py", "virtual_orders/research/ml/registry.py",
 })
 RESEARCH_TABLES = ("pattern_detections", "setup_candidates", "research_backtests", "research_models")
 
