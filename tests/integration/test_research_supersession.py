@@ -206,15 +206,24 @@ def test_concurrent_open_revision_is_serialized_by_advisory_lock(engine):
     assert numbers == [1, 2]
 
 
-def seed_one_detection(engine: Engine, *, end_ts: datetime = DETECTION_END_TS, pattern: str = "HAMMER") -> int:
+def seed_one_detection(
+    engine: Engine,
+    *,
+    end_ts: datetime = DETECTION_END_TS,
+    pattern: str = "HAMMER",
+    data_as_of: datetime | None = None,
+) -> int:
     """Insert one bare pattern detection, independent of the full scan pipeline, and return its id.
 
     `end_ts` defaults to the module's single fixed bucket; a caller placing more than one detection in the
     same window (to exercise `pattern_markers`, which returns several rows at once) passes distinct values.
+    `data_as_of` defaults to the bucket itself and is given explicitly by a caller placing a reading in data
+    time -- one written only after an earlier as-of instant has passed.
     """
+    written_at = end_ts if data_as_of is None else data_as_of
     with engine.begin() as conn:
         run = start_run(
-            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=end_ts, code_version="test-sha",
+            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=written_at, code_version="test-sha",
             engine_version="candles-v1", configuration={},
         )
         row = conn.execute(
@@ -223,7 +232,7 @@ def seed_one_detection(engine: Engine, *, end_ts: datetime = DETECTION_END_TS, p
                 start_ts=end_ts - timedelta(minutes=15), end_ts=end_ts, candles=1,
                 geometry_score=Decimal("0.5"), context_score=Decimal("0.5"), overall_score=Decimal("0.5"),
                 engine_version="candles-v1", price_source="test", evidence={}, evidence_hash="seed",
-                data_as_of=end_ts, created_at=end_ts,
+                data_as_of=written_at, created_at=written_at,
             ).returning(tables.pattern_detections.c.id)
         )
         return int(row.scalar_one())
@@ -287,6 +296,32 @@ def test_the_active_view_answers_as_of_an_earlier_instant(engine):
                                    engine_version="candles-v1",
                                    as_of=datetime(2026, 9, 22, 18, 0, tzinfo=UTC))
     assert [row["id"] for row in before] == [detection_id]
+
+
+def test_the_as_of_view_excludes_a_reading_that_did_not_exist_yet(engine):
+    """An as-of view half in data-time would answer with two contradictory readings of one bucket.
+
+    Filtering only the supersessions returns the stale reading (not yet superseded at `as_of`) together with
+    the reading that replaced it, which was created afterwards and so was not the platform's claim then.
+    """
+    stale = seed_one_detection(engine, pattern="HAMMER")
+    replacement = seed_one_detection(engine, pattern="DOJI",
+                                     data_as_of=datetime(2026, 9, 22, 19, 0, tzinfo=UTC))
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=stale,
+            replacement_fact_id=replacement, reason=SUPERSEDED_BY_REVISION, source_run_id=uuid4(),
+            revision_id=None, superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC),
+            input_content_hash="corrected",
+        )
+    with engine.connect() as conn:
+        before = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15, end_ts=DETECTION_END_TS,
+                                   engine_version="candles-v1",
+                                   as_of=datetime(2026, 9, 22, 18, 0, tzinfo=UTC))
+        now = active_detections(conn, ticker="AAPL", timeframe=Timeframe.M15, end_ts=DETECTION_END_TS,
+                                engine_version="candles-v1")
+    assert [row["id"] for row in before] == [stale]
+    assert [row["id"] for row in now] == [replacement]
 
 
 def test_recording_the_same_supersession_twice_is_idempotent(engine):

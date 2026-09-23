@@ -364,24 +364,30 @@ def active_detections(
 ) -> list[dict[str, Any]]:
     """Detections for one bucket that no revision has superseded or retracted.
 
-    With `as_of`, only supersessions recorded at or before that instant count, so the view answers what was
-    active then rather than only what is active now.
+    With `as_of`, the whole view moves into data-time: only supersessions recorded at or before that instant
+    count, and only readings whose own `data_as_of` had already been reached. Filtering the supersessions
+    alone would answer with the stale reading AND the reading that replaced it only afterwards -- two
+    contradictory readings of one bucket, the very thing the present-tense view exists to prevent. The two
+    clauses use the same column because `_apply_reconciliation` stamps `superseded_at` with the scan's
+    `data_as_of`, so both sides of the view are measured on one clock.
     """
     gone = select(research_supersessions.c.superseded_fact_id).where(
         research_supersessions.c.fact_type == FACT_PATTERN_DETECTION
     )
+    conditions = [
+        pattern_detections.c.ticker == ticker,
+        pattern_detections.c.timeframe == timeframe.value,
+        pattern_detections.c.end_ts == end_ts,
+        pattern_detections.c.engine_version == engine_version,
+    ]
     if as_of is not None:
         gone = gone.where(research_supersessions.c.superseded_at <= as_of)
+        conditions.append(pattern_detections.c.data_as_of <= as_of)
     rows = conn.execute(
         select(
             pattern_detections.c.id, pattern_detections.c.pattern, pattern_detections.c.evidence_hash,
             pattern_detections.c.input_content_hash,
-        ).where(and_(
-            pattern_detections.c.ticker == ticker,
-            pattern_detections.c.timeframe == timeframe.value,
-            pattern_detections.c.end_ts == end_ts,
-            pattern_detections.c.engine_version == engine_version,
-            pattern_detections.c.id.not_in(gone),
-        )).order_by(pattern_detections.c.id)
+        ).where(and_(*conditions, pattern_detections.c.id.not_in(gone)))
+        .order_by(pattern_detections.c.id)
     ).mappings().all()
     return [dict(row) for row in rows]
