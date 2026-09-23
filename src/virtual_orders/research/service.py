@@ -359,7 +359,6 @@ def _scan_one(
                 # Every later candle of this series is newer, so none of them is settled either. Leaving the
                 # resume watermark where it is means this bucket is read again next scan, with its real shape.
                 break
-            input_hash = candles_input_hash(indexed_bars, candles[max(0, index - identity_span + 1) : index + 1])
             found = detect_at(
                 candles[: index + 1], index,
                 prior=prior_context(candles, index, lookback=config.prior_lookback),
@@ -367,6 +366,14 @@ def _scan_one(
             )
             if config.patterns is not None:
                 found = [item for item in found if item.pattern in config.patterns]
+            # Two readers, and only two: the rows stored below carry the hash, and a revisited bucket is
+            # judged against it. A candle that yields no reading and is seen for the first time has neither,
+            # and most candles are that candle -- hashing their identity window cost more than the detection
+            # it guards. Computed here, after the filter, so `found` already means "readings this scan keeps".
+            input_hash = (
+                candles_input_hash(indexed_bars, candles[max(0, index - identity_span + 1) : index + 1])
+                if found or already_read else ""
+            )
             if found:
                 structure = structure_at(candles[: index + 1], index, series, swings=pivots)
                 estimate, side = _pressure_at(bars, candle, config.pressure_window_bars)
