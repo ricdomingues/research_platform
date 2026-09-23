@@ -194,7 +194,24 @@ def pattern_markers(
 
     The price is the candidate's entry zone when it has valid levels; without one the marker has no price and
     the existing chart builder draws it as a vertical line, exactly as it does for a DATA_GAP.
+
+    A superseded candidate is treated the same as no candidate at all: the marker (the detection's own
+    reading) stays, but its candidate-derived fields go back to NULL, exactly like a detection that was never
+    promoted to a candidate. The exclusion is applied to the JOIN's own condition rather than the query's
+    WHERE clause: `setup_candidates.c.id` is NULL for a detection with no candidate at all, and `NULL NOT IN
+    (...)` evaluates to NULL rather than TRUE, so a WHERE-clause guard would silently drop that marker
+    entirely. Folding the guard into the join predicate instead leaves an unmatched-by-guard candidate row
+    exactly like an unmatched-by-join-key one: absent, with the detection's own row intact.
     """
+    join_condition: Any = setup_candidates.c.pattern_detection_id == pattern_detections.c.id
+    if not include_superseded:
+        join_condition = and_(
+            join_condition,
+            setup_candidates.c.id.not_in(
+                select(research_supersessions.c.superseded_fact_id)
+                .where(research_supersessions.c.fact_type == FACT_SETUP_CANDIDATE)
+            ),
+        )
     query = (
         select(
             pattern_detections.c.id, pattern_detections.c.pattern, pattern_detections.c.direction,
@@ -203,9 +220,7 @@ def pattern_markers(
             setup_candidates.c.deterministic_score, setup_candidates.c.ml_probability,
             setup_candidates.c.id.label("candidate_id"),
         )
-        .select_from(pattern_detections.outerjoin(
-            setup_candidates, setup_candidates.c.pattern_detection_id == pattern_detections.c.id
-        ))
+        .select_from(pattern_detections.outerjoin(setup_candidates, join_condition))
         .where(and_(
             pattern_detections.c.ticker == ticker,
             pattern_detections.c.timeframe == timeframe.value,

@@ -185,27 +185,35 @@ def test_concurrent_open_revision_is_serialized_by_advisory_lock(engine):
     assert numbers == [1, 2]
 
 
-def seed_one_detection(engine: Engine) -> int:
-    """Insert one bare pattern detection, independent of the full scan pipeline, and return its id."""
+def seed_one_detection(engine: Engine, *, end_ts: datetime = DETECTION_END_TS, pattern: str = "HAMMER") -> int:
+    """Insert one bare pattern detection, independent of the full scan pipeline, and return its id.
+
+    `end_ts` defaults to the module's single fixed bucket; a caller placing more than one detection in the
+    same window (to exercise `pattern_markers`, which returns several rows at once) passes distinct values.
+    """
     with engine.begin() as conn:
         run = start_run(
-            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=DETECTION_END_TS, code_version="test-sha",
+            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=end_ts, code_version="test-sha",
             engine_version="candles-v1", configuration={},
         )
         row = conn.execute(
             tables.pattern_detections.insert().values(
-                run_id=run.run_id, ticker="AAPL", timeframe="15m", pattern="HAMMER", direction="BULLISH",
-                start_ts=DETECTION_END_TS - timedelta(minutes=15), end_ts=DETECTION_END_TS, candles=1,
+                run_id=run.run_id, ticker="AAPL", timeframe="15m", pattern=pattern, direction="BULLISH",
+                start_ts=end_ts - timedelta(minutes=15), end_ts=end_ts, candles=1,
                 geometry_score=Decimal("0.5"), context_score=Decimal("0.5"), overall_score=Decimal("0.5"),
                 engine_version="candles-v1", price_source="test", evidence={}, evidence_hash="seed",
-                data_as_of=DETECTION_END_TS, created_at=DETECTION_END_TS,
+                data_as_of=end_ts, created_at=end_ts,
             ).returning(tables.pattern_detections.c.id)
         )
         return int(row.scalar_one())
 
 
 def seed_one_candidate(engine: Engine, detection_id: int) -> int:
-    """Insert one bare setup candidate linked to `detection_id`, and return its id."""
+    """Insert one bare setup candidate linked to `detection_id`, and return its id.
+
+    `candidate_hash` is derived from `detection_id` so that seeding a candidate for more than one detection in
+    the same test never collides against `setup_candidates`'s own uniqueness constraint.
+    """
     with engine.begin() as conn:
         run = start_run(
             conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=DETECTION_END_TS, code_version="test-sha",
@@ -219,7 +227,8 @@ def seed_one_candidate(engine: Engine, detection_id: int) -> int:
                 thesis_document={}, deterministic_score=Decimal("0.5"), ml_probability=None,
                 model_version=None, label_version=None, entry_zone_low=None, entry_zone_high=None,
                 stop=None, target1=None, target2=None, risk_reward=None, levels_valid=False,
-                levels_errors=["NO_LEVELS"], client_signal_id="seed-signal", candidate_hash="seed",
+                levels_errors=["NO_LEVELS"], client_signal_id=f"seed-signal-{detection_id}",
+                candidate_hash=f"seed-{detection_id}",
                 data_as_of=DETECTION_END_TS, created_at=DETECTION_END_TS,
             ).returning(tables.setup_candidates.c.id)
         )
@@ -529,3 +538,58 @@ def test_a_candidate_disappears_when_its_parent_detection_is_retracted(engine):
         assert candidate_detail(conn, candidate_id) is None
         audited = list_candidates(conn, ticker="AAPL", limit=50, include_superseded=True)
     assert [row["id"] for row in audited] == [candidate_id]
+
+
+def test_pattern_markers_drops_a_superseded_candidates_fields_but_keeps_the_marker(engine):
+    """The candidate-derived join side of `pattern_markers` (fix round 1 review finding).
+
+    Three markers share one window: one whose candidate was superseded directly (its own SETUP_CANDIDATE row,
+    since nothing writes those in production yet, but a later phase will), one whose detection never had a
+    candidate at all, and one whose candidate is untouched. The middle case is the NULL trap: `setup_candidates
+    .c.id` is NULL for a detection with no candidate, and `NULL NOT IN (...)` is NULL rather than TRUE, so a
+    naive WHERE-clause guard would drop that marker's whole row instead of only its (already-absent) candidate
+    fields. A superseded candidate must land in exactly the same shape as no candidate at all: the detection's
+    own reading is unaffected and its marker stays, only the stale candidate fields go back to NULL.
+    """
+    superseded_detection = seed_one_detection(engine, end_ts=DETECTION_END_TS - timedelta(minutes=10),
+                                              pattern="HAMMER")
+    superseded_candidate = seed_one_candidate(engine, superseded_detection)
+    candidateless_detection = seed_one_detection(engine, end_ts=DETECTION_END_TS, pattern="DOJI")
+    active_detection = seed_one_detection(engine, end_ts=DETECTION_END_TS + timedelta(minutes=10),
+                                          pattern="ENGULFING")
+    active_candidate = seed_one_candidate(engine, active_detection)
+    with engine.begin() as conn:
+        record_supersession(
+            conn, fact_type=FACT_SETUP_CANDIDATE, superseded_fact_id=superseded_candidate,
+            replacement_fact_id=None, reason=NO_LONGER_DETECTED, source_run_id=uuid4(), revision_id=None,
+            superseded_at=datetime(2026, 9, 22, 19, 0, tzinfo=UTC), input_content_hash="corrected",
+        )
+
+    with engine.connect() as conn:
+        markers = pattern_markers(conn, ticker="AAPL", timeframe=Timeframe.M15, start=WINDOW_START, end=WINDOW_END)
+    by_detection = {row["seq"]: row for row in markers}
+
+    # All three detections still show a marker: the superseded candidate did not take its detection with it,
+    # and the candidateless detection was not dropped by the guard against the superseded one.
+    assert set(by_detection) == {superseded_detection, candidateless_detection, active_detection}
+
+    # The superseded candidate's own fields are gone, exactly like a detection with no candidate at all.
+    assert by_detection[superseded_detection]["candidate_id"] is None
+    assert by_detection[superseded_detection]["deterministic_score"] is None
+    assert by_detection[superseded_detection]["ml_probability"] is None
+
+    # A detection that never had a candidate keeps the same NULL shape — the guard must not disturb this row.
+    assert by_detection[candidateless_detection]["candidate_id"] is None
+    assert by_detection[candidateless_detection]["deterministic_score"] is None
+
+    # An untouched candidate keeps its own fields intact.
+    assert by_detection[active_detection]["candidate_id"] == active_candidate
+    assert by_detection[active_detection]["deterministic_score"] == Decimal("0.5")
+
+    with engine.connect() as conn:
+        audited = pattern_markers(conn, ticker="AAPL", timeframe=Timeframe.M15, start=WINDOW_START,
+                                  end=WINDOW_END, include_superseded=True)
+    audited_by_detection = {row["seq"]: row for row in audited}
+    assert set(audited_by_detection) == {superseded_detection, candidateless_detection, active_detection}
+    assert audited_by_detection[superseded_detection]["candidate_id"] == superseded_candidate
+    assert audited_by_detection[superseded_detection]["deterministic_score"] == Decimal("0.5")
