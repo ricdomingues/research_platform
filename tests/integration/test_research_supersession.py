@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -19,6 +21,7 @@ from tests.integration.test_research_scan import (
     seed,
 )
 from tests.support import et
+from virtual_orders.alerts.watchlist import add_ticker
 from virtual_orders.marketdata.sources import RawBar
 from virtual_orders.readmodels.research import candidate_detail, list_candidates, list_detections, pattern_markers
 from virtual_orders.research.datasets import (
@@ -37,7 +40,7 @@ from virtual_orders.research.repository import (
     record_supersession,
     start_run,
 )
-from virtual_orders.research.service import run_research_scan
+from virtual_orders.research.service import ScanConfig, run_research_scan
 from virtual_orders.storage import tables
 
 DETECTION_END_TS = datetime(2026, 9, 22, 16, 0, tzinfo=UTC)
@@ -593,3 +596,114 @@ def test_pattern_markers_drops_a_superseded_candidates_fields_but_keeps_the_mark
     assert set(audited_by_detection) == {superseded_detection, candidateless_detection, active_detection}
     assert audited_by_detection[superseded_detection]["candidate_id"] == superseded_candidate
     assert audited_by_detection[superseded_detection]["deterministic_score"] == Decimal("0.5")
+
+
+# --- The canary case becomes a portable regression fixture (task 8) -----------------------------------------
+#
+# Seven real rows from the Plan 5 canary: a research scan read candles whose bars were still arriving, so it
+# detected a pattern from incomplete data; the bars landed afterwards, the candles changed shape, and those
+# readings no longer hold. They were frozen in the table because the scan's resume watermark had already moved
+# past them, which is exactly the class of row this phase exists to retract. The fixture carries the stored
+# detection and the corrected bars as data -- never a database id -- so the case survives a fresh database, a
+# restore, a migration and a different host.
+#
+# `input_content_hash` is seeded NULL because that is exactly how the real rows read: they predate the column,
+# and that is what makes them exercise the "identity unknown, so reconcile" path rather than the fast
+# "unchanged" skip.
+#
+# Each case ships its own `lookback_sessions`. The change-detection hash a revisited bucket is judged against
+# covers `MAX_PATTERN_CANDLES + PRIOR_TREND_LOOKBACK` = 23 candles of the case's OWN timeframe ending at its
+# bucket, and `run_research_scan`'s window only resamples the sessions it is told to look back across. Id 41
+# is a 1h detection -- a session yields barely 6-7 hourly buckets, so 23 of them reach back four sessions --
+# and four of the six 15m cases land early enough in their own session that the window reaches across the
+# weekend into the prior one. Each case's `note` records the exact reasoning; see the task report for the span
+# each case's `corrected_bars` was exported over.
+
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "research" / "canary_retraction.json"
+
+
+def load_canary_cases() -> list[dict]:
+    return json.loads(FIXTURE.read_text())
+
+
+def parse(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def insert_detection(engine: Engine, detection: dict) -> int:
+    """Replay the stored fact exactly as the pre-fix engine wrote it, ids assigned by this database.
+
+    `pattern_detections.run_id` is a foreign key into `research_runs` (migration 0006, predating this plan),
+    so the stale row needs a real run to point at -- `uuid4()` alone is rejected. `start_run` gives it one,
+    exactly as `seed_one_detection` above does for the same reason.
+    """
+    with engine.begin() as conn:
+        run = start_run(
+            conn, kind=ResearchRunKind.RESEARCH_SCAN, data_as_of=parse(detection["end_ts"]),
+            code_version="test-sha", engine_version=detection["engine_version"], configuration={},
+        )
+        return int(conn.execute(tables.pattern_detections.insert().values(
+            run_id=run.run_id, ticker=detection["ticker"], timeframe=detection["timeframe"],
+            pattern=detection["pattern"], direction=detection["direction"],
+            start_ts=parse(detection["start_ts"]), end_ts=parse(detection["end_ts"]),
+            candles=detection["candles"], geometry_score=Decimal("0.5"), context_score=Decimal("0.5"),
+            overall_score=Decimal("0.5"), engine_version=detection["engine_version"],
+            price_source=PRICE_SOURCE, evidence=detection["evidence"],
+            evidence_hash=detection["evidence_hash"], input_content_hash=None,
+            data_as_of=parse(detection["end_ts"]), created_at=parse(detection["end_ts"]),
+        ).returning(tables.pattern_detections.c.id)).scalar_one())
+
+
+def store_bars(engine: Engine, ticker: str, bars: list[dict]) -> None:
+    """The corrected minutes, written through the same backdated path the other integration tests use."""
+    backdated_batch(engine, ticker, [
+        RawBar(ticker, parse(bar["ts"]), Decimal(str(bar["open"])), Decimal(str(bar["high"])),
+               Decimal(str(bar["low"])), Decimal(str(bar["close"])), Decimal(str(bar["volume"])))
+        for bar in bars
+    ], ingested_at=parse(bars[-1]["ts"]))
+    with engine.begin() as conn:
+        add_ticker(conn, ticker, added_at=parse(bars[0]["ts"]))
+
+
+def market_now_for(case: dict) -> datetime:
+    """Late enough that the bucket is settled and still inside the revisit window."""
+    return parse(case["detection"]["end_ts"]) + timedelta(minutes=30)
+
+
+CANARY_CASES = load_canary_cases()
+
+
+@pytest.mark.parametrize("case", CANARY_CASES, ids=[case["case_id"] for case in CANARY_CASES])
+def test_the_canary_cases_retract_against_their_corrected_bars(engine: Engine, case: dict) -> None:
+    """Real regressions: incomplete data produced a reading, corrected data no longer supports it.
+
+    Ids are deliberately absent from the fixture -- these must survive a fresh database, a restore and a
+    different host. Each case is parametrized rather than looped over a single shared database: several of
+    the seven cases' 23-candle identity windows overlap in wall-clock time (they are all AAPL, and four of
+    them share the same trading day), so sharing one connection across cases would let one case's corrected
+    bars and stored detections leak into another's resume watermark and revisit window. Parametrizing gives
+    each case the fresh database the `engine` fixture already provides per test, which is what an independent
+    regression case requires anyway.
+
+    A per-case `ScanConfig` is required, not the module's `CONFIG`: case 41 is a 1h detection that `CONFIG`'s
+    15m-only timeframe would never examine -- passing by never being looked at, which is exactly the vacuous
+    test this fixture exists to prevent -- and `lookback_sessions` must reach back as far as each case's own
+    identity window does (see the fixture's own `lookback_sessions` and `note` per case).
+    """
+    detection = case["detection"]
+    timeframe = Timeframe(detection["timeframe"])
+    config = ScanConfig(timeframes=(timeframe,), lookback_sessions=case["lookback_sessions"])
+
+    detection_id = insert_detection(engine, detection)
+    store_bars(engine, detection["ticker"], case["corrected_bars"])
+    report = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                               market_now=market_now_for(case), config=config)
+
+    assert report.supersessions >= 1
+    with engine.connect() as conn:
+        active = active_detections(
+            conn, ticker=detection["ticker"], timeframe=timeframe,
+            end_ts=parse(detection["end_ts"]), engine_version=detection["engine_version"],
+        )
+    assert detection_id not in {row["id"] for row in active}
+    assert count(engine, "pattern_detections") >= 1  # nothing was deleted
