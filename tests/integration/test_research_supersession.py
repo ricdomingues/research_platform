@@ -805,4 +805,17 @@ def test_the_canary_cases_retract_against_their_corrected_bars(engine: Engine, c
             end_ts=parse(detection["end_ts"]), engine_version=detection["engine_version"],
         )
     assert detection_id not in {row["id"] for row in active}
-    assert count(engine, "pattern_detections") >= 1  # nothing was deleted
+    # The fixture exists to prove a RETRACTION, and `supersessions >= 1` plus a vacated active view do not
+    # say that: a regression that wrote SUPERSEDED_BY_REVISION pointing at some other reading of the same
+    # bucket would satisfy both, and case canary-40's bucket really does acquire a different pattern on
+    # rescan. All seven cases produce exactly this one row, so the exact claim is free to assert.
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT reason, replacement_fact_id FROM research_supersessions"
+            " WHERE superseded_fact_id = :id"), {"id": detection_id}).all()
+        # "Retracted, not deleted" is a claim about this row, not about the table's size: a count would still
+        # pass with every row but one removed.
+        still_there = conn.execute(text(
+            "SELECT 1 FROM pattern_detections WHERE id = :id"), {"id": detection_id}).scalar_one_or_none()
+    assert [tuple(row) for row in rows] == [(NO_LONGER_DETECTED, None)]
+    assert still_there == 1
