@@ -426,6 +426,52 @@ def test_a_correction_supersedes_the_reading_it_invalidates(engine):
     assert retracted[0]["superseded_fact_id"] not in {row["id"] for row in still_active}
 
 
+def revert_one_minute(engine, ticker="AAPL", minute_index=CASE_A_MINUTE):
+    """The vendor takes its own correction back: the original minute returns in a still newer batch."""
+    backdated_batch(engine, ticker, [marching_bars(ticker)[minute_index]], ingested_at=et(DAY, "16:50"))
+
+
+def test_a_reverted_correction_is_counted_rather_than_silently_dropped(engine):
+    """A known gap this phase does not close, made visible instead of swallowed.
+
+    When the vendor reverts its own correction, the reading current data supports again is the ORIGINAL fact,
+    already superseded by the correction. `record_detection` returns that fact's id through ON CONFLICT, so
+    the active view holds no row to point a replacement link at and nothing is written: the stale reading
+    born of the correction stays active with no fact saying current data no longer supports it. Repairing
+    that needs design work -- retracting the stale reading would leave the bucket empty where current data
+    does support the original, and un-superseding is forbidden -- so this phase counts the case and says so.
+    A count that stayed silently at zero would let the gap widen unnoticed.
+    """
+    seed(engine)
+    run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                      market_now=MARKET_NOW, config=CONFIG)
+
+    correct_one_minute(engine, minute_index=CASE_A_MINUTE)
+    second = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                               market_now=et(DAY, "16:45"), config=CONFIG)
+    assert second.supersessions >= 1
+    assert second.reverted_corrections == 0  # an ordinary correction resolves its own link
+    linked = [row for row in supersession_rows(engine) if row["reason"] == SUPERSEDED_BY_REVISION]
+    assert linked
+    rows_before = len(supersession_rows(engine))
+
+    revert_one_minute(engine)
+    third = run_research_scan(engine, code_version="test-sha", price_source=PRICE_SOURCE,
+                              market_now=et(DAY, "16:55"), config=CONFIG)
+
+    assert third.reverted_corrections >= 1
+    assert len(supersession_rows(engine)) == rows_before  # counted, and nothing written: no link exists
+    with engine.connect() as conn:
+        for row in linked:
+            active = {item["id"] for item in active_detections(
+                conn, ticker="AAPL", timeframe=Timeframe.M15, end_ts=row["fresh_end_ts"],
+                engine_version="candles-v1",
+            )}
+            # The gap itself, pinned so a later phase closing it has to come back here: the reading the
+            # correction produced is still served although the data behind it has been taken back.
+            assert row["replacement_fact_id"] in active
+
+
 # The reading that `correct_one_minute`'s own default corrects. Minute 209 closes the bucket ending 12:59 ET,
 # which carries no reading of its own; the reading it changes is the three-candle pattern ending 13:29 ET, two
 # buckets later. A bucket's readings are not a function of its own bars alone.

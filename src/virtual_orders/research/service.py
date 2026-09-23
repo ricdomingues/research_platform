@@ -161,6 +161,12 @@ class ScanReport:
     candidates: int = 0
     # Stored facts this scan retired: readings a revision replaced, plus readings it retracted outright (D96).
     supersessions: int = 0
+    # Corrections a vendor reverted, which this phase records the count of and nothing else. Current data
+    # supports a reading whose own row is already superseded, so there is no active row to point a link at
+    # and the stale reading that replaced it stays active, unmarked. These are counted in `supersessions`
+    # above, which totals reconciliation outcomes: subtract this to get the rows actually written. See
+    # `_apply_reconciliation`.
+    reverted_corrections: int = 0
     scanned: dict[str, int] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
     skipped: str | None = None
@@ -262,23 +268,35 @@ def _apply_reconciliation(
     end_ts: datetime,
     input_hash: str,
     superseded_at: datetime,
-) -> None:
+) -> int:
     """Write the supersession facts, resolving replacement ids after the new readings have been stored.
 
     A replacement id can only be recorded once its row exists, and the replacement rows are written by the
     normal detection path earlier in this same transaction, so the ids are read back here rather than guessed.
+
+    Returns the number of reverted corrections seen: replacements with no active row to link to (below).
     """
     if not outcome.superseded and not outcome.retracted:
-        return
+        return 0
     by_hash = {
         row["evidence_hash"]: row["id"]
         for row in active_detections(conn, ticker=ticker, timeframe=timeframe, end_ts=end_ts,
                                      engine_version=ENGINE_VERSION)
     }
+    reverted = 0
     for fact_id, replacement_hash in outcome.superseded:
         replacement_id = by_hash.get(replacement_hash)
         if replacement_id is None:
-            continue  # no row to point at, so no link to record; the next scan sees the same correction
+            # The vendor reverted its own correction. `record_detection` returned the original fact's id
+            # through ON CONFLICT, and that fact is already superseded, so it is absent from the active view
+            # and there is no row to point a link at. This phase counts the case and writes nothing: the
+            # stale reading that replaced the original stays active with no fact saying current data no
+            # longer supports it, and no later scan repairs that by itself. Retracting the stale reading
+            # would leave the bucket with no reading at all where current data does support the original,
+            # and un-superseding the original is forbidden by the append-only rule -- choosing either here
+            # would write a wrong fact, which is worse than this counted, known gap. Next phase.
+            reverted += 1
+            continue
         record_supersession(
             conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=fact_id,
             replacement_fact_id=int(replacement_id), reason=SUPERSEDED_BY_REVISION, source_run_id=run_id,
@@ -290,6 +308,7 @@ def _apply_reconciliation(
             reason=NO_LONGER_DETECTED, source_run_id=run_id, revision_id=None,
             superseded_at=superseded_at, input_content_hash=input_hash,
         )
+    return reverted
 
 
 def _scan_one(
@@ -305,24 +324,24 @@ def _scan_one(
     end: datetime,
     completed_through: datetime,
     config: ScanConfig,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     """Scan one ticker and timeframe in its own transaction.
 
-    Returns (candles, detections, candidates, supersessions).
+    Returns (candles, detections, candidates, supersessions, reverted_corrections).
     """
     with engine.begin() as conn:
         bars = read_bars_as_of(conn, ticker, price_source, start, end, data_as_of)
         if not bars:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
         candles = resample(bars, calendar=calendar, timeframe=timeframe, start=start, end=end,
                            completed_through=completed_through)
         if not candles:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
         resume = last_detection_end_ts(conn, ticker=ticker, timeframe=timeframe, engine_version=ENGINE_VERSION)
         revisit_from = _revisit_floor(calendar, start=start, end=end, sessions_back=config.revisit_sessions)
         series = compute_series(candles)
         pivots = swing_points(candles)
-        detections = candidates = supersessions = 0
+        detections = candidates = supersessions = reverted = 0
         settle = timedelta(minutes=config.settle_minutes)
         indexed_bars = bar_index(bars)  # built once: the identity window below is asked for per candle
         # Everything a reading at one bucket can be derived from: its pattern's own candles, and the
@@ -386,12 +405,12 @@ def _scan_one(
             if unchanged:
                 continue
             outcome = reconcile(found, stored_rows)
-            _apply_reconciliation(
+            reverted += _apply_reconciliation(
                 conn, outcome=outcome, run_id=run_id, ticker=ticker, timeframe=timeframe,
                 end_ts=candle.end_ts, input_hash=input_hash, superseded_at=data_as_of,
             )
             supersessions += len(outcome.superseded) + len(outcome.retracted)
-        return len(candles), detections, candidates, supersessions
+        return len(candles), detections, candidates, supersessions, reverted
 
 
 def run_research_scan(
@@ -429,13 +448,13 @@ def run_research_scan(
         )
     failures: dict[str, str] = {}
     scanned: dict[str, int] = {}
-    detections = candidates = supersessions = 0
+    detections = candidates = supersessions = reverted = 0
     try:
         for ticker in symbols:
             for timeframe in config.timeframes:
                 key = f"{ticker}:{timeframe.value}"
                 try:
-                    seen, found, made, retired = _scan_one(
+                    seen, found, made, retired, reverts = _scan_one(
                         engine, run_id=run.run_id, ticker=ticker, timeframe=timeframe,
                         price_source=price_source, data_as_of=data_as_of, calendar=calendar, start=start,
                         end=end, completed_through=completed_through, config=config,
@@ -447,15 +466,18 @@ def run_research_scan(
                 detections += found
                 candidates += made
                 supersessions += retired
+                reverted += reverts
         with engine.begin() as conn:
             finish_run(conn, run.run_id, ResearchRunStatus.COMPLETED, {
                 "tickers": list(symbols), "price_source": price_source, "market_now": now,
                 "candles_scanned": scanned, "failures": failures,
+                "reverted_corrections": reverted,
                 "detections": count_detections(conn, run.run_id),
                 "candidates": count_candidates(conn, run.run_id),
             })
         return ScanReport(run.run_id, data_as_of, symbols, detections=detections, candidates=candidates,
-                          supersessions=supersessions, scanned=scanned, failures=failures)
+                          supersessions=supersessions, reverted_corrections=reverted, scanned=scanned,
+                          failures=failures)
     except Exception as exc:
         with engine.begin() as conn:
             finish_run(conn, run.run_id, ResearchRunStatus.FAILED,
