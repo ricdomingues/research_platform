@@ -145,6 +145,24 @@ def test_a_statistic_pinned_to_a_revision_still_resolves_after_a_later_one_exist
     assert resolved == early
 
 
+def test_revisions_sharing_a_watermark_resolve_to_the_later_one(engine):
+    """D102 is a reproducibility promise, so `revision_as_of` may not leave the answer to the planner.
+
+    `open_revision` never rejects a repeated `data_as_of` -- the advisory-lock test below opens two revisions
+    at the same watermark on purpose -- so ordering by the watermark alone would return either of them. The
+    dense `revision_number` breaks the tie, and a cohort pinned to the result reproduces its number.
+    """
+    watermark = datetime(2026, 9, 22, 20, 0, tzinfo=UTC)
+    with engine.begin() as conn:
+        dataset_id = ensure_dataset(conn, **DATASET)
+        open_revision(conn, dataset_id=dataset_id, data_as_of=watermark, manifest_hash="aaa")
+        later = open_revision(conn, dataset_id=dataset_id, data_as_of=watermark, manifest_hash="bbb")
+    for _ in range(5):  # repeated because an unordered tie is free to come back either way each time
+        with engine.connect() as conn:
+            assert revision_as_of(conn, dataset_id=dataset_id,
+                                  as_of=datetime(2026, 9, 23, 0, 0, tzinfo=UTC)) == later
+
+
 def test_concurrent_open_revision_is_serialized_by_advisory_lock(engine):
     """Two concurrent callers opening revisions for the same dataset both succeed with distinct numbers."""
     with engine.begin() as conn:

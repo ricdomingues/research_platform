@@ -74,10 +74,20 @@ def open_revision(
 
 
 def revision_as_of(conn: Connection, *, dataset_id: UUID, as_of: datetime) -> UUID | None:
-    """The newest revision whose watermark does not run past `as_of`."""
+    """The newest revision whose watermark does not run past `as_of`.
+
+    Two revisions of one dataset may share a watermark — `open_revision` never rejects a repeated
+    `data_as_of`, and two callers racing for the same one both succeed. Ordering by the watermark alone would
+    then leave the winner to the planner, and a cohort pinned to whichever revision came back would not
+    reproduce its number. `revision_number` is dense and never reused, so it breaks the tie for good: the
+    later revision of a shared watermark is the answer, always the same one.
+    """
     return conn.execute(
         select(research_dataset_revisions.c.revision_id).where(and_(
             research_dataset_revisions.c.dataset_id == dataset_id,
             research_dataset_revisions.c.data_as_of <= as_of,
-        )).order_by(research_dataset_revisions.c.data_as_of.desc()).limit(1)
+        )).order_by(
+            research_dataset_revisions.c.data_as_of.desc(),
+            research_dataset_revisions.c.revision_number.desc(),
+        ).limit(1)
     ).scalar_one_or_none()
