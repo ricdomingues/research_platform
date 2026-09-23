@@ -51,10 +51,12 @@ SINGLE_CANDLE = ("DOJI", "DRAGONFLY_DOJI", "GRAVESTONE_DOJI", "HAMMER", "HANGING
                  "SHOOTING_STAR")
 TWO_CANDLE = ("BULLISH_ENGULFING", "BEARISH_ENGULFING", "PIERCING_LINE", "DARK_CLOUD_COVER")
 THREE_CANDLE = ("MORNING_STAR", "EVENING_STAR", "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS")
-# Each family with the number of candles a reading of it spans. Both the supported set and the longest span
-# are derived from this rather than written down twice, so adding a fourth family cannot leave the rest of the
-# platform quietly assuming three. `identity.py` hashes a window this wide, because a reading at one bucket is
-# a function of every candle its pattern reaches back over, not of that bucket's own bars alone.
+# Each family with the number of candles a reading of it spans. `SUPPORTED_PATTERNS` and
+# `MAX_PATTERN_CANDLES` are derived from it rather than written down twice, which is what pins the identity
+# window: `identity.py` hashes a span this wide, because a reading at one bucket is a function of every
+# candle its pattern reaches back over, not of that bucket's own bars alone. It does NOT yet make a fourth
+# family safe to add -- `detect_at` below still dispatches on a hardcoded (1, 2, 3) and `backtest.py`'s
+# `PATTERN_LENGTHS` still spells the same three out -- so a new family means editing those too.
 PATTERN_FAMILIES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (1, SINGLE_CANDLE), (2, TWO_CANDLE), (3, THREE_CANDLE),
 )
