@@ -179,6 +179,10 @@ class ApiClient:
         return list(self._request("GET", "/signals", params={"date": day, "strategy": strategy,
                                                              "limit": limit})["signals"])
 
+    def signals_actionability(self, *, limit: int = 50) -> JsonObject:
+        """The manual-review panel. A read: the API opens no run and ingests nothing for it (D103)."""
+        return self._request("GET", "/signals/actionability", params={"limit": limit})
+
     def create_manual_order(self, signal_id: str) -> JsonObject:
         return self._request("POST", f"/signals/{_segment(signal_id)}/orders")
 

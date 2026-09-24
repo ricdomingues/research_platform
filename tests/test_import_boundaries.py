@@ -350,11 +350,12 @@ def test_boundary_scan_covers_the_3c_modules() -> None:
         f"{package}/views/common.py", f"{package}/views/overview.py", f"{package}/views/signals.py",
         f"{package}/views/orders.py", f"{package}/views/comparison.py", f"{package}/views/health.py",
         f"{package}/views/watchlist.py", f"{package}/views/market.py", f"{package}/views/portfolio.py",
+        f"{package}/views/panel.py",
         "dashboard/tests/test_api_contract.py",
     } <= dashboard
     assert not (DASHBOARD_PROJECT / "dashboard" / "pages").exists()  # a pages/ folder would switch on multipage (D40)
-    # D57 + Plan 4 D72 (19) + Plan 5 D92 (8 research routes)
-    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 27
+    # D57 + Plan 4 D72 (19) + Plan 5 D92 (8 research routes) + Plan 7 D103 (the panel)
+    assert len(list((DASHBOARD_PROJECT / "tests" / "fixtures" / "api").glob("*.json"))) == 28
     assert (ROOT / "tests/integration/api/test_dashboard_contract.py").exists()
     neutral = {_rel(p) for p in _neutral_files()}
     assert {
