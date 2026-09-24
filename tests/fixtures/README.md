@@ -14,3 +14,4 @@ Fixtures reais sanitizadas, quando existirem, entram com rótulo próprio e não
 | `fmp/dividends.json` | synthetic/documentation-derived fixture | FMP `GET /stable/dividends` |
 | `yfinance/aapl_1m_2025-11-25.csv` | synthetic/documentation-derived fixture | `yfinance.Ticker.history(interval="1m", auto_adjust=False, actions=True)` |
 | `yfinance/aapl_1d_2025-11.csv` | synthetic/documentation-derived fixture | `yfinance.Ticker.history(interval="1d", auto_adjust=False, actions=True)` |
+| `research/canary_retraction.json` | real fixture: sanitized production data | Seven `pattern_detections` rows and their corrected `bars_1m` from the Plan 5 canary database, exported by data (no database id, ticker/timeframe/pattern/end_ts only) so the case survives a fresh database, a restore and a different host |

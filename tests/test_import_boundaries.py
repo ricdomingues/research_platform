@@ -53,11 +53,13 @@ PLATFORM_PURE_MODULES = [
     # Plan 5: the research engines are pure calculation over values handed to them. Only `repository.py`,
     # `service.py` and `ml/registry.py` touch the database, and they are deliberately absent from this list.
     "virtual_orders/research/models.py", "virtual_orders/research/timeframes.py",
-    "virtual_orders/research/candlesticks.py", "virtual_orders/research/indicators.py",
+    "virtual_orders/research/candlesticks.py", "virtual_orders/research/identity.py",
+    "virtual_orders/research/indicators.py",
     "virtual_orders/research/market_structure.py", "virtual_orders/research/features.py",
     "virtual_orders/research/labels.py", "virtual_orders/research/levels.py",
     "virtual_orders/research/scoring.py", "virtual_orders/research/setups.py",
     "virtual_orders/research/backtest.py", "virtual_orders/research/promotion.py",
+    "virtual_orders/research/reconcile.py",
     "virtual_orders/research/ml/dataset.py", "virtual_orders/research/ml/model.py",
     "virtual_orders/research/ml/training.py", "virtual_orders/research/ml/inference.py",
 ]
@@ -455,8 +457,8 @@ RESEARCH_PACKAGE = "virtual_orders/research"
 # The only research modules allowed to touch the database. Everything else is pure calculation over values
 # handed to it, which is what lets the same code run a live scan and a historical backtest (Plan 5).
 RESEARCH_PERSISTENCE = frozenset({
-    "virtual_orders/research/repository.py", "virtual_orders/research/service.py",
-    "virtual_orders/research/ml/registry.py",
+    "virtual_orders/research/datasets.py", "virtual_orders/research/repository.py",
+    "virtual_orders/research/service.py", "virtual_orders/research/ml/registry.py",
 })
 RESEARCH_TABLES = ("pattern_detections", "setup_candidates", "research_backtests", "research_models")
 

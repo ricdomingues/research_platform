@@ -28,7 +28,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Engine
+from sqlalchemy import Connection, Engine
 
 from core.domain.calendar import Session, SessionCalendar
 from core.domain.models import Bar
@@ -44,8 +44,15 @@ from virtual_orders.evaluator.outcomes import ERROR_PREFIX
 from virtual_orders.marketdata.asof import acquire_data_as_of, floor_minute, read_bars_as_of
 from virtual_orders.marketdata.calendars import calendar_for_window
 from virtual_orders.research.backtest import direction_of, prior_context
-from virtual_orders.research.candlesticks import DEFAULT_THRESHOLDS, ENGINE_VERSION, PatternThresholds, detect_at
+from virtual_orders.research.candlesticks import (
+    DEFAULT_THRESHOLDS,
+    ENGINE_VERSION,
+    MAX_PATTERN_CANDLES,
+    PatternThresholds,
+    detect_at,
+)
 from virtual_orders.research.features import build_snapshot
+from virtual_orders.research.identity import bar_index, candles_input_hash
 from virtual_orders.research.indicators import IndicatorSeries, compute_series
 from virtual_orders.research.levels import DEFAULT_POLICY, LevelPolicy, propose_levels
 from virtual_orders.research.market_structure import (
@@ -55,15 +62,21 @@ from virtual_orders.research.market_structure import (
     swing_points,
 )
 from virtual_orders.research.models import Candle, PatternDetection, Timeframe
+from virtual_orders.research.reconcile import Reconciliation, reconcile
 from virtual_orders.research.repository import (
+    FACT_PATTERN_DETECTION,
+    NO_LONGER_DETECTED,
+    SUPERSEDED_BY_REVISION,
     ResearchRunKind,
     ResearchRunStatus,
+    active_detections,
     count_candidates,
     count_detections,
     finish_run,
     last_detection_end_ts,
     record_candidate,
     record_detection,
+    record_supersession,
     start_run,
 )
 from virtual_orders.research.scoring import DEFAULT_WEIGHTS, ScoreWeights, score_setup
@@ -146,6 +159,14 @@ class ScanReport:
     tickers: tuple[str, ...] = ()
     detections: int = 0
     candidates: int = 0
+    # Stored facts this scan retired: readings a revision replaced, plus readings it retracted outright (D96).
+    supersessions: int = 0
+    # Corrections a vendor reverted, which this phase records the count of and nothing else. Current data
+    # supports a reading whose own row is already superseded, so there is no active row to point a link at
+    # and the stale reading that replaced it stays active, unmarked. These are counted in `supersessions`
+    # above, which totals reconciliation outcomes: subtract this to get the rows actually written. See
+    # `_apply_reconciliation`.
+    reverted_corrections: int = 0
     scanned: dict[str, int] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
     skipped: str | None = None
@@ -237,6 +258,59 @@ def _revisit_floor(
     return sessions[-sessions_back:][0].open_utc
 
 
+def _apply_reconciliation(
+    conn: Connection,
+    *,
+    outcome: Reconciliation,
+    run_id: UUID,
+    ticker: str,
+    timeframe: Timeframe,
+    end_ts: datetime,
+    input_hash: str,
+    superseded_at: datetime,
+) -> int:
+    """Write the supersession facts, resolving replacement ids after the new readings have been stored.
+
+    A replacement id can only be recorded once its row exists, and the replacement rows are written by the
+    normal detection path earlier in this same transaction, so the ids are read back here rather than guessed.
+
+    Returns the number of reverted corrections seen: replacements with no active row to link to (below).
+    """
+    if not outcome.superseded and not outcome.retracted:
+        return 0
+    by_hash = {
+        row["evidence_hash"]: row["id"]
+        for row in active_detections(conn, ticker=ticker, timeframe=timeframe, end_ts=end_ts,
+                                     engine_version=ENGINE_VERSION)
+    }
+    reverted = 0
+    for fact_id, replacement_hash in outcome.superseded:
+        replacement_id = by_hash.get(replacement_hash)
+        if replacement_id is None:
+            # The vendor reverted its own correction. `record_detection` returned the original fact's id
+            # through ON CONFLICT, and that fact is already superseded, so it is absent from the active view
+            # and there is no row to point a link at. This phase counts the case and writes nothing: the
+            # stale reading that replaced the original stays active with no fact saying current data no
+            # longer supports it, and no later scan repairs that by itself. Retracting the stale reading
+            # would leave the bucket with no reading at all where current data does support the original,
+            # and un-superseding the original is forbidden by the append-only rule -- choosing either here
+            # would write a wrong fact, which is worse than this counted, known gap. Next phase.
+            reverted += 1
+            continue
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=fact_id,
+            replacement_fact_id=int(replacement_id), reason=SUPERSEDED_BY_REVISION, source_run_id=run_id,
+            revision_id=None, superseded_at=superseded_at, input_content_hash=input_hash,
+        )
+    for fact_id in outcome.retracted:
+        record_supersession(
+            conn, fact_type=FACT_PATTERN_DETECTION, superseded_fact_id=fact_id, replacement_fact_id=None,
+            reason=NO_LONGER_DETECTED, source_run_id=run_id, revision_id=None,
+            superseded_at=superseded_at, input_content_hash=input_hash,
+        )
+    return reverted
+
+
 def _scan_one(
     engine: Engine,
     *,
@@ -250,22 +324,33 @@ def _scan_one(
     end: datetime,
     completed_through: datetime,
     config: ScanConfig,
-) -> tuple[int, int, int]:
-    """Scan one ticker and timeframe in its own transaction. Returns (candles, detections, candidates)."""
+) -> tuple[int, int, int, int, int]:
+    """Scan one ticker and timeframe in its own transaction.
+
+    Returns (candles, detections, candidates, supersessions, reverted_corrections).
+    """
     with engine.begin() as conn:
         bars = read_bars_as_of(conn, ticker, price_source, start, end, data_as_of)
         if not bars:
-            return 0, 0, 0
+            return 0, 0, 0, 0, 0
         candles = resample(bars, calendar=calendar, timeframe=timeframe, start=start, end=end,
                            completed_through=completed_through)
         if not candles:
-            return 0, 0, 0
+            return 0, 0, 0, 0, 0
         resume = last_detection_end_ts(conn, ticker=ticker, timeframe=timeframe, engine_version=ENGINE_VERSION)
         revisit_from = _revisit_floor(calendar, start=start, end=end, sessions_back=config.revisit_sessions)
         series = compute_series(candles)
         pivots = swing_points(candles)
-        detections = candidates = 0
+        detections = candidates = supersessions = reverted = 0
         settle = timedelta(minutes=config.settle_minutes)
+        indexed_bars = bar_index(bars)  # built once: the identity window below is asked for per candle
+        # Everything a reading at one bucket can be derived from: its pattern's own candles, and the
+        # prior-trend lookback measured over the candles before them. `evidence_hash` carries the prior trend
+        # — `context_score` is a function of it and `prior.evidence()` is spliced into the detection's
+        # evidence — so a correction anywhere in this span changes the reading. The lookback comes from the
+        # config the scan actually detects with, never the module default, so raising it cannot silently
+        # leave the hash narrower than the readings it is meant to guard.
+        identity_span = MAX_PATTERN_CANDLES + config.prior_lookback
         for index, candle in enumerate(candles):
             already_read = resume is not None and candle.end_ts <= resume
             if already_read and (revisit_from is None or candle.end_ts < revisit_from):
@@ -281,34 +366,58 @@ def _scan_one(
             )
             if config.patterns is not None:
                 found = [item for item in found if item.pattern in config.patterns]
-            if not found:
+            # Two readers, and only two: the rows stored below carry the hash, and a revisited bucket is
+            # judged against it. A candle that yields no reading and is seen for the first time has neither,
+            # and most candles are that candle -- hashing their identity window cost more than the detection
+            # it guards. Computed here, after the filter, so `found` already means "readings this scan keeps".
+            input_hash = (
+                candles_input_hash(indexed_bars, candles[max(0, index - identity_span + 1) : index + 1])
+                if found or already_read else ""
+            )
+            if found:
+                structure = structure_at(candles[: index + 1], index, series, swings=pivots)
+                estimate, side = _pressure_at(bars, candle, config.pressure_window_bars)
+                bounds = _session_bounds(calendar, candle)
+                atr_value = series.atr_at(index)
+                for detection in found:
+                    detection_id, inserted = record_detection(
+                        conn, run_id=run_id, ticker=ticker, price_source=price_source, detection=detection,
+                        data_as_of=data_as_of, input_content_hash=input_hash,
+                    )
+                    detections += int(inserted)
+                    candidate = _candidate_for(
+                        ticker=ticker, candles=candles, index=index, detection=detection, series=series,
+                        structure=structure, estimate=estimate, side=side, bounds=bounds, atr_value=atr_value,
+                        data_as_of=data_as_of, config=config,
+                    )
+                    if candidate is None:
+                        continue
+                    _, added = record_candidate(conn, run_id=run_id, detection_id=detection_id,
+                                                candidate=candidate, input_content_hash=input_hash)
+                    candidates += int(added)
+            if not already_read:
+                continue  # a bucket read for the first time has no earlier reading of itself to reconcile
+            # A revisited bucket. Only a genuine change in the DATA behind its readings is a reason to
+            # reconcile: an identical re-ingestion under a new batch id is a non-event (D96). Reconciling when
+            # nothing changed is harmless — identical readings match the stored ones and nothing is written —
+            # so the comparison errs wide. The new readings are already stored, so the active view here holds
+            # both the stale rows and the ones that replace them.
+            stored_rows = active_detections(
+                conn, ticker=ticker, timeframe=timeframe, end_ts=candle.end_ts,
+                engine_version=ENGINE_VERSION,
+            )
+            unchanged = bool(stored_rows) and all(
+                row["input_content_hash"] == input_hash for row in stored_rows
+            )
+            if unchanged:
                 continue
-            structure = structure_at(candles[: index + 1], index, series, swings=pivots)
-            estimate, side = _pressure_at(bars, candle, config.pressure_window_bars)
-            bounds = _session_bounds(calendar, candle)
-            atr_value = series.atr_at(index)
-            for detection in found:
-                detection_id, inserted = record_detection(
-                    conn, run_id=run_id, ticker=ticker, price_source=price_source, detection=detection,
-                    data_as_of=data_as_of,
-                )
-                detections += int(inserted)
-                if not inserted:
-                    # An unchanged reading of a revisited candle. Its candidate was written in the same
-                    # transaction as the detection itself, so there is nothing new to derive -- and deriving it
-                    # anyway would store a duplicate, because `FeatureSnapshot` carries the scan's `data_as_of`
-                    # and therefore hashes differently on every run even when every measured value is identical.
-                    continue
-                candidate = _candidate_for(
-                    ticker=ticker, candles=candles, index=index, detection=detection, series=series,
-                    structure=structure, estimate=estimate, side=side, bounds=bounds, atr_value=atr_value,
-                    data_as_of=data_as_of, config=config,
-                )
-                if candidate is None:
-                    continue
-                _, added = record_candidate(conn, run_id=run_id, detection_id=detection_id, candidate=candidate)
-                candidates += int(added)
-        return len(candles), detections, candidates
+            outcome = reconcile(found, stored_rows)
+            reverted += _apply_reconciliation(
+                conn, outcome=outcome, run_id=run_id, ticker=ticker, timeframe=timeframe,
+                end_ts=candle.end_ts, input_hash=input_hash, superseded_at=data_as_of,
+            )
+            supersessions += len(outcome.superseded) + len(outcome.retracted)
+        return len(candles), detections, candidates, supersessions, reverted
 
 
 def run_research_scan(
@@ -346,13 +455,13 @@ def run_research_scan(
         )
     failures: dict[str, str] = {}
     scanned: dict[str, int] = {}
-    detections = candidates = 0
+    detections = candidates = supersessions = reverted = 0
     try:
         for ticker in symbols:
             for timeframe in config.timeframes:
                 key = f"{ticker}:{timeframe.value}"
                 try:
-                    seen, found, made = _scan_one(
+                    seen, found, made, retired, reverts = _scan_one(
                         engine, run_id=run.run_id, ticker=ticker, timeframe=timeframe,
                         price_source=price_source, data_as_of=data_as_of, calendar=calendar, start=start,
                         end=end, completed_through=completed_through, config=config,
@@ -363,14 +472,19 @@ def run_research_scan(
                 scanned[key] = seen
                 detections += found
                 candidates += made
+                supersessions += retired
+                reverted += reverts
         with engine.begin() as conn:
             finish_run(conn, run.run_id, ResearchRunStatus.COMPLETED, {
                 "tickers": list(symbols), "price_source": price_source, "market_now": now,
                 "candles_scanned": scanned, "failures": failures,
+                "reverted_corrections": reverted,
                 "detections": count_detections(conn, run.run_id),
                 "candidates": count_candidates(conn, run.run_id),
             })
-        return ScanReport(run.run_id, data_as_of, symbols, detections, candidates, scanned, failures)
+        return ScanReport(run.run_id, data_as_of, symbols, detections=detections, candidates=candidates,
+                          supersessions=supersessions, reverted_corrections=reverted, scanned=scanned,
+                          failures=failures)
     except Exception as exc:
         with engine.begin() as conn:
             finish_run(conn, run.run_id, ResearchRunStatus.FAILED,

@@ -51,7 +51,17 @@ SINGLE_CANDLE = ("DOJI", "DRAGONFLY_DOJI", "GRAVESTONE_DOJI", "HAMMER", "HANGING
                  "SHOOTING_STAR")
 TWO_CANDLE = ("BULLISH_ENGULFING", "BEARISH_ENGULFING", "PIERCING_LINE", "DARK_CLOUD_COVER")
 THREE_CANDLE = ("MORNING_STAR", "EVENING_STAR", "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS")
-SUPPORTED_PATTERNS = SINGLE_CANDLE + TWO_CANDLE + THREE_CANDLE
+# Each family with the number of candles a reading of it spans. `SUPPORTED_PATTERNS` and
+# `MAX_PATTERN_CANDLES` are derived from it rather than written down twice, which is what pins the identity
+# window: `identity.py` hashes a span this wide, because a reading at one bucket is a function of every
+# candle its pattern reaches back over, not of that bucket's own bars alone. It does NOT yet make a fourth
+# family safe to add -- `detect_at` below still dispatches on a hardcoded (1, 2, 3) and `backtest.py`'s
+# `PATTERN_LENGTHS` still spells the same three out -- so a new family means editing those too.
+PATTERN_FAMILIES: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (1, SINGLE_CANDLE), (2, TWO_CANDLE), (3, THREE_CANDLE),
+)
+SUPPORTED_PATTERNS = tuple(name for _, family in PATTERN_FAMILIES for name in family)
+MAX_PATTERN_CANDLES = max(span for span, _ in PATTERN_FAMILIES)
 # Continuation patterns want a prior trend that agrees with them; every other pattern is a reversal and wants
 # one that opposes it. The distinction only ever changes `context_score`, never whether the geometry matched.
 CONTINUATION_PATTERNS = frozenset({"THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS"})

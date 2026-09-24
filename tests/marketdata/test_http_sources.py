@@ -157,13 +157,24 @@ def test_gateway_rejects_duplicate_source_ids():
 
 
 def test_fixture_manifest_labels_every_fixture_as_synthetic():
+    """Every provider-format fixture is documentation-derived, never a captured network response.
+
+    `research/` fixtures are a different kind of thing: real, sanitized rows from our own database rather
+    than a provider's API response (Plan 6 task 8, `canary_retraction.json`), so they carry their own label
+    in the manifest instead of claiming to be synthetic.
+    """
     manifest = (FIXTURES / "README.md").read_text()
-    labelled = {
-        line.split("`")[1] for line in manifest.splitlines()
-        if line.startswith("| `") and "synthetic/documentation-derived fixture" in line
+    rows = {
+        line.split("`")[1]: line for line in manifest.splitlines() if line.startswith("| `")
     }
     files = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*") if p.is_file() and p.name != "README.md"}
-    assert files and files <= labelled
+    assert files and files <= set(rows)  # every fixture is accounted for in the manifest
+
+    provider_files = {f for f in files if not f.startswith("research/")}
+    assert provider_files and all("synthetic/documentation-derived fixture" in rows[f] for f in provider_files)
+
+    real_files = files - provider_files
+    assert real_files and all("real fixture" in rows[f] for f in real_files)
 
 
 def test_alpaca_repeated_page_token_fails_instead_of_looping():

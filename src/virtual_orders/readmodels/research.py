@@ -16,11 +16,13 @@ from sqlalchemy import Connection, Select, and_, select
 
 from virtual_orders.research.backtest import BacktestStats
 from virtual_orders.research.models import Timeframe
+from virtual_orders.research.repository import FACT_PATTERN_DETECTION, FACT_SETUP_CANDIDATE
 from virtual_orders.storage.tables import (
     pattern_detections,
     research_backtests,
     research_models,
     research_runs,
+    research_supersessions,
     setup_candidates,
 )
 
@@ -57,6 +59,17 @@ def _window(query: Select[Any], column: Any, start: datetime | None, end: dateti
     return query
 
 
+def _not_superseded(query: Select[Any], column: Any, fact_type: str) -> Select[Any]:
+    """Exclude facts a later revision superseded or retracted (D96).
+
+    Statistics and screens read the active view; only an explicit audit asks for everything.
+    """
+    return query.where(column.not_in(
+        select(research_supersessions.c.superseded_fact_id)
+        .where(research_supersessions.c.fact_type == fact_type)
+    ))
+
+
 def list_runs(conn: Connection, *, kind: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
     query = select(research_runs).order_by(research_runs.c.started_at.desc(), research_runs.c.run_id).limit(limit)
     if kind is not None:
@@ -75,6 +88,7 @@ def list_detections(
     end: datetime | None = None,
     limit: int = 200,
     offset: int = 0,
+    include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     query = select(*DETECTION_COLUMNS)
     if ticker is not None:
@@ -86,6 +100,8 @@ def list_detections(
     if direction is not None:
         query = query.where(pattern_detections.c.direction == direction)
     query = _window(query, pattern_detections.c.end_ts, start, end)
+    if not include_superseded:
+        query = _not_superseded(query, pattern_detections.c.id, FACT_PATTERN_DETECTION)
     query = query.order_by(pattern_detections.c.end_ts.desc(), pattern_detections.c.id.desc())
     return [dict(row) for row in conn.execute(query.limit(limit).offset(offset)).mappings()]
 
@@ -107,6 +123,7 @@ def list_candidates(
     end: datetime | None = None,
     limit: int = 200,
     offset: int = 0,
+    include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     """The scanner: one row per candidate, with the context values it was scored on (spec 21)."""
     query = select(*CANDIDATE_COLUMNS, setup_candidates.c.feature_document)
@@ -123,6 +140,11 @@ def list_candidates(
     if levels_valid is not None:
         query = query.where(setup_candidates.c.levels_valid.is_(levels_valid))
     query = _window(query, setup_candidates.c.detected_at, start, end)
+    if not include_superseded:
+        # A candidate is derived from its detection: if the reading is gone, the candidate goes with it. Its
+        # own fact_type is also checked so a later phase's own-candidate reconciliation takes effect unchanged.
+        query = _not_superseded(query, setup_candidates.c.id, FACT_SETUP_CANDIDATE)
+        query = _not_superseded(query, setup_candidates.c.pattern_detection_id, FACT_PATTERN_DETECTION)
     query = query.order_by(setup_candidates.c.detected_at.desc(), setup_candidates.c.id.desc())
     rows = []
     for row in conn.execute(query.limit(limit).offset(offset)).mappings():
@@ -132,13 +154,23 @@ def list_candidates(
     return rows
 
 
-def candidate_detail(conn: Connection, candidate_id: int) -> dict[str, Any] | None:
-    """One candidate with its whole feature snapshot, structured thesis and originating detection."""
-    row = conn.execute(
+def candidate_detail(
+    conn: Connection, candidate_id: int, *, include_superseded: bool = False
+) -> dict[str, Any] | None:
+    """One candidate with its whole feature snapshot, structured thesis and originating detection.
+
+    Returns None under the default when the candidate itself was superseded or its parent detection was
+    superseded or retracted: a candidate is derived from its detection, and does not outlive it.
+    """
+    query = (
         select(*CANDIDATE_COLUMNS, setup_candidates.c.feature_document, setup_candidates.c.thesis_document,
                setup_candidates.c.candidate_hash)
         .where(setup_candidates.c.id == candidate_id)
-    ).mappings().first()
+    )
+    if not include_superseded:
+        query = _not_superseded(query, setup_candidates.c.id, FACT_SETUP_CANDIDATE)
+        query = _not_superseded(query, setup_candidates.c.pattern_detection_id, FACT_PATTERN_DETECTION)
+    row = conn.execute(query).mappings().first()
     if row is None:
         return None
     candidate = dict(row)
@@ -156,12 +188,30 @@ def pattern_markers(
     start: datetime,
     end: datetime,
     limit: int = 500,
+    include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     """Chart markers in the platform's existing marker shape (type, ts, price), plus the research fields.
 
     The price is the candidate's entry zone when it has valid levels; without one the marker has no price and
     the existing chart builder draws it as a vertical line, exactly as it does for a DATA_GAP.
+
+    A superseded candidate is treated the same as no candidate at all: the marker (the detection's own
+    reading) stays, but its candidate-derived fields go back to NULL, exactly like a detection that was never
+    promoted to a candidate. The exclusion is applied to the JOIN's own condition rather than the query's
+    WHERE clause: `setup_candidates.c.id` is NULL for a detection with no candidate at all, and `NULL NOT IN
+    (...)` evaluates to NULL rather than TRUE, so a WHERE-clause guard would silently drop that marker
+    entirely. Folding the guard into the join predicate instead leaves an unmatched-by-guard candidate row
+    exactly like an unmatched-by-join-key one: absent, with the detection's own row intact.
     """
+    join_condition: Any = setup_candidates.c.pattern_detection_id == pattern_detections.c.id
+    if not include_superseded:
+        join_condition = and_(
+            join_condition,
+            setup_candidates.c.id.not_in(
+                select(research_supersessions.c.superseded_fact_id)
+                .where(research_supersessions.c.fact_type == FACT_SETUP_CANDIDATE)
+            ),
+        )
     query = (
         select(
             pattern_detections.c.id, pattern_detections.c.pattern, pattern_detections.c.direction,
@@ -170,9 +220,7 @@ def pattern_markers(
             setup_candidates.c.deterministic_score, setup_candidates.c.ml_probability,
             setup_candidates.c.id.label("candidate_id"),
         )
-        .select_from(pattern_detections.outerjoin(
-            setup_candidates, setup_candidates.c.pattern_detection_id == pattern_detections.c.id
-        ))
+        .select_from(pattern_detections.outerjoin(setup_candidates, join_condition))
         .where(and_(
             pattern_detections.c.ticker == ticker,
             pattern_detections.c.timeframe == timeframe.value,
@@ -182,6 +230,8 @@ def pattern_markers(
         .order_by(pattern_detections.c.end_ts, pattern_detections.c.id)
         .limit(limit)
     )
+    if not include_superseded:
+        query = _not_superseded(query, pattern_detections.c.id, FACT_PATTERN_DETECTION)
     markers: list[dict[str, Any]] = []
     for row in conn.execute(query).mappings():
         zone_high, zone_low = row["entry_zone_high"], row["entry_zone_low"]

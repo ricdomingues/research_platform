@@ -2,7 +2,7 @@
   "ambiguity_policy": "STOP_FIRST_ON_SAME_CANDLE_V1",
   "code_version": "test-sha",
   "engine_version": "candles-v1",
-  "feature_version": "features-v1",
+  "feature_version": "features-v2",
   "label_version": "labels-v1",
   "scanned_timeframes": [
     "15m",
