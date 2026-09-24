@@ -106,6 +106,14 @@ def test_promotion_blockers_reads_the_engines_reasons():
 
 
 # --- the page ------------------------------------------------------------------------------------------------
+PANEL_SIGNAL = {
+    "signal_id": "sig-1", "ticker": "AAPL", "state": "ACTIONABLE", "reason": "ENTRY_WINDOW_OPEN",
+    "strategy": "REXSHARE", "strategy_version": "1.0", "direction": "LONG",
+    "entry_zone_low": Decimal("100"), "entry_zone_high": Decimal("102"), "stop": Decimal("97"),
+    "target1": Decimal("106"), "target2": None, "valid_until_ts": TS, "order_id": None,
+}
+
+
 class FakeClient:
     def __init__(self, promote=None):
         self.promote = promote
@@ -122,6 +130,9 @@ class FakeClient:
 
     def research_candidates(self, **kwargs):
         return {"candidates": [CANDIDATE], "score_interpretation": INTERPRETATION}
+
+    def signals_actionability(self, **kwargs):
+        return {"as_of": TS, "since": TS, "data_as_of": TS, "signals": [PANEL_SIGNAL]}
 
     def promote_candidate(self, candidate_id, *, override=False, auto_order=True):
         self.promoted.append((candidate_id, override, auto_order))
@@ -187,3 +198,22 @@ def test_a_candidate_without_a_valid_chain_offers_no_override():
     at.selectbox(key="terminal_candidate").select_index(1).run()
     assert any("não há preços" in warning.value for warning in at.warning)
     assert not at.button
+
+
+def test_the_panel_renders_its_state_and_always_says_how_fresh_the_data_is():
+    at = open_terminal(FakeClient())
+    panel = "".join(item.value for item in at.markdown)
+    assert 'class="vo-card vo-actionable vo-pulse"' in panel and "ACTIONABLE" in panel
+    assert any("dados as-of" in caption.value for caption in at.caption)
+
+
+def test_a_stale_state_reaches_the_screen_without_pulsing():
+    class Stale(FakeClient):
+        def signals_actionability(self, **kwargs):
+            row = {**PANEL_SIGNAL, "state": "STALE", "reason": "COVERAGE_UNVERIFIED"}
+            return {"as_of": TS, "since": TS, "data_as_of": TS, "signals": [row]}
+
+    at = open_terminal(Stale())
+    panel = "".join(item.value for item in at.markdown)
+    assert 'class="vo-card vo-stale"' in panel and "STALE" in panel
+    assert "vo-pulse" not in panel.split("</style>", 1)[1]  # the class is defined, never applied

@@ -326,5 +326,9 @@ def test_dashboard_contract_matches_the_recorded_api_responses(api):
     get("research_backtests", "/research/backtests", limit=100)
     get("research_models", "/research/models", limit=20)
 
+    # Plan 7 (D103): recorded last, so re-recording leaves every earlier file byte-identical. The panel is a
+    # read -- this call must add no ACTIONABILITY run, which `test_actionability_panel.py` is what pins.
+    get("signals_actionability", "/signals/actionability")
+
     if not RECORD:  # no stale fixture: every file in the folder comes from this walk
         assert sorted(path.stem for path in FIXTURES.glob("*.json")) == sorted(recorder.names)

@@ -30,6 +30,7 @@ from dashboard.viewmodels import (
     promotion_blockers,
     today_et,
 )
+from dashboard.views import panel
 from dashboard.views.common import guarded
 
 LOOKBACK_DAYS = 5
@@ -82,6 +83,9 @@ def _render_promotion(client: ApiClient, candidate: dict[str, Any]) -> None:
 
 def render(client: ApiClient) -> None:
     st.title("Terminal")
+    # The panel refreshes on its own clock (D103-D105); the chart below it does not move underneath the owner.
+    panel.render(client)
+    panel.render_watch(client)
     symbols = _symbols(client)
     if not symbols:
         st.info("Watchlist vazia: adicione um ticker para ver o gráfico.")

@@ -814,3 +814,111 @@ def promotion_blockers(detail: Mapping[str, Any] | None) -> list[str]:
         return []
     errors = detail.get("errors")
     return [str(item) for item in errors] if isinstance(errors, Sequence) and not isinstance(errors, str) else []
+
+
+# --- Manual-review panel (Plan 7, D104-D105) ------------------------------------------------------------
+#
+# The panel renders what the API decided and nothing else: no state is computed here, no probability is
+# estimated, and no previous answer is ever carried forward. A state this file does not recognise renders
+# muted, never green -- a screen that pulses must fail towards "say nothing", not towards "buy".
+
+PANEL_ACTIONABLE = "ACTIONABLE"
+PANEL_STALE = "STALE"
+
+# state -> (css tone, pulses)
+PANEL_TONES: dict[str, tuple[str, bool]] = {
+    PANEL_ACTIONABLE: ("actionable", True),
+    "EXIT": ("exit", True),
+    "INVALIDATED": ("muted", False),
+    "EXPIRED": ("muted", False),
+    PANEL_STALE: ("stale", False),
+}
+UNKNOWN_TONE = ("stale", False)
+
+PANEL_STATE_LABELS = {
+    PANEL_ACTIONABLE: "ACTIONABLE",
+    "EXIT": "EXIT",
+    "INVALIDATED": "INVALIDATED",
+    "EXPIRED": "EXPIRED",
+    PANEL_STALE: "STALE",
+}
+
+PANEL_REASONS = {
+    "ENTRY_WINDOW_OPEN": "Entrada ainda válida agora",
+    "COVERAGE_UNVERIFIED": "Dados incompletos: nada pode ser afirmado",
+    "MANUAL_REVIEW_REQUIRED": "Revisão manual exigida",
+    "POSITION_OPEN": "Posição aberta",
+    "TARGET_FINAL": "Alvo atingido",
+    "STOPPED": "Stop atingido",
+    "TIME_EXIT": "Saída por tempo",
+    "SIGNAL_EXPIRED": "Janela encerrada",
+    "INVALIDATED": "Setup invalidado",
+    "ENTRY_OPPORTUNITY_ALREADY_OCCURRED": "A entrada já aconteceu",
+}
+
+PANEL_EMPTY = "Nenhum sinal na janela: nada a revisar agora."
+STALE_NOTICE = "Cinza significa que o dado não sustenta afirmação nenhuma — não que o setup piorou."
+
+
+@dataclass(frozen=True)
+class PanelRow:
+    signal_id: str
+    ticker: str
+    state: str
+    state_label: str
+    reason: str
+    tone: str
+    pulse: bool
+    strategy: str
+    direction: str
+    zone: str
+    stop: str
+    targets: str
+    valid_until: str
+    order_id: str | None
+
+
+def panel_row(row: Mapping[str, Any]) -> PanelRow:
+    state = str(row.get("state") or "")
+    tone, pulse = PANEL_TONES.get(state, UNKNOWN_TONE)
+    reason = str(row.get("reason") or "")
+    order_id = row.get("order_id")
+    return PanelRow(
+        signal_id=str(row.get("signal_id") or ""),
+        ticker=str(row.get("ticker") or EMPTY),
+        state=state,
+        state_label=PANEL_STATE_LABELS.get(state, state or EMPTY),
+        reason=PANEL_REASONS.get(reason, reason or EMPTY),
+        tone=tone,
+        pulse=pulse,
+        strategy=f"{row.get('strategy', EMPTY)} {row.get('strategy_version', '')}".strip(),
+        direction=str(row.get("direction") or EMPTY),
+        zone=f"{fmt_price(row.get('entry_zone_low'))}–{fmt_price(row.get('entry_zone_high'))}",
+        stop=fmt_price(row.get("stop")),
+        targets=(fmt_price(row.get("target1")) if row.get("target2") is None
+                 else f"{fmt_price(row.get('target1'))} / {fmt_price(row.get('target2'))}"),
+        valid_until=fmt_ts(row.get("valid_until_ts")),
+        order_id=None if order_id is None else str(order_id),
+    )
+
+
+def panel_rows(payload: Mapping[str, Any]) -> list[PanelRow]:
+    rows = payload.get("signals")
+    if not isinstance(rows, Sequence):
+        return []
+    return [panel_row(row) for row in rows if isinstance(row, Mapping)]
+
+
+def watch_rows(candidates: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """WATCH: candidates the promotion policy still blocks, showing the policy's own codes (D105)."""
+    blocked = []
+    for row in candidates:
+        codes = row.get("promotion_blockers")
+        if not codes:
+            continue
+        blocked.append({
+            "Ativo": str(row.get("ticker", EMPTY)), "Padrão": str(row.get("pattern", EMPTY)),
+            "Direção": str(row.get("direction", EMPTY)), "Score": fmt_price(row.get("deterministic_score")),
+            "Bloqueios": ", ".join(str(code) for code in codes), "Detectado": fmt_ts(row.get("detected_at")),
+        })
+    return blocked

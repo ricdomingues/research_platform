@@ -1,7 +1,7 @@
 {
   "candidate": {
     "candidate_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "client_signal_id": "CANDLE_RESEARCH-candles-v1+features-v2+scoring-v1:AAPL:15m:2025-11-25T21:14:00+00:00",
+    "client_signal_id": "CANDLE_RESEARCH-candles-v1+features-v2+scoring-v1:AAPL:15m:BULLISH_ENGULFING:LONG:2025-11-25T21:14:00+00:00",
     "created_at": "2000-01-01T00:00:00+00:00",
     "data_as_of": "2025-11-25T21:30:00+00:00",
     "detected_at": "2025-11-25T21:14:00+00:00",
@@ -83,7 +83,9 @@
     "feature_version": "features-v2",
     "id": 1,
     "label_version": null,
-    "levels_errors": [],
+    "levels_errors": [
+      "NO_LEVELS"
+    ],
     "levels_valid": false,
     "ml_probability": null,
     "model_version": null,

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import dashboard.viewmodels as vm
 from dashboard.client import ApiRequestFailed, ApiUnreachable
 from dashboard.viewmodels import (
     CURVE_LIMIT_NOTICE,
@@ -350,3 +351,58 @@ def test_summary_rows_and_the_observation_error_message():
     assert (rows[1]["Completo"], rows[1]["R"]) == ("não", "+0.00R")
     error = ApiRequestFailed(422, "OBSERVATION_REQUEST_INVALID", detail={"errors": ["NOT_A_SESSION:2025-11-29"]})
     assert describe_api_error(error) == "Pedido de observação inválido. Códigos: NOT_A_SESSION:2025-11-29."
+
+
+# --- Manual-review panel (Plan 7) ---------------------------------------------------------------------
+
+def _panel_payload(**overrides):
+    row = {
+        "signal_id": "s-1", "ticker": "MDT", "state": "ACTIONABLE", "reason": "ENTRY_WINDOW_OPEN",
+        "strategy": "REXSHARE", "strategy_version": "1.0", "direction": "LONG",
+        "entry_zone_low": Decimal("95.00"), "entry_zone_high": Decimal("95.60"), "stop": Decimal("94.80"),
+        "target1": Decimal("97.10"), "target2": None, "valid_until_ts": "2026-09-24T20:00:00+00:00",
+        "order_id": None,
+    }
+    row.update(overrides)
+    return {"signals": [row]}
+
+
+def test_actionable_pulses_green():
+    (row,) = vm.panel_rows(_panel_payload())
+    assert (row.tone, row.pulse) == ("actionable", True)
+    assert row.reason == "Entrada ainda válida agora"
+
+
+def test_stale_never_pulses_and_is_not_green():
+    (row,) = vm.panel_rows(_panel_payload(state="STALE", reason="COVERAGE_UNVERIFIED"))
+    assert (row.tone, row.pulse) == ("stale", False)
+    assert row.reason == "Dados incompletos: nada pode ser afirmado"
+
+
+def test_exit_pulses_and_keeps_the_domain_reason():
+    (row,) = vm.panel_rows(_panel_payload(state="EXIT", reason="TARGET_FINAL", order_id="o-9"))
+    assert (row.tone, row.pulse) == ("exit", True)
+    assert row.reason == "Alvo atingido" and row.order_id == "o-9"
+
+
+def test_an_unknown_state_renders_muted_and_never_pulses():
+    """A state this dashboard has never heard of must fail towards saying nothing, never towards green."""
+    (row,) = vm.panel_rows(_panel_payload(state="SOMETHING_NEW", reason="WHATEVER"))
+    assert (row.tone, row.pulse) == ("stale", False)
+    assert row.state_label == "SOMETHING_NEW" and row.reason == "WHATEVER"
+
+
+def test_a_malformed_payload_yields_no_rows_rather_than_a_guess():
+    assert vm.panel_rows({}) == []
+    assert vm.panel_rows({"signals": None}) == []
+
+
+def test_watch_lists_only_blocked_candidates_with_the_policy_codes():
+    rows = vm.watch_rows([
+        {"ticker": "AAPL", "pattern": "HAMMER", "direction": "LONG", "deterministic_score": Decimal("0.71"),
+         "detected_at": "2026-09-24T18:00:00+00:00", "promotion_blockers": ["NOT_VALIDATED"]},
+        {"ticker": "MSFT", "pattern": "ENGULFING", "direction": "LONG", "deterministic_score": Decimal("0.80"),
+         "detected_at": "2026-09-24T18:00:00+00:00", "promotion_blockers": []},
+    ])
+    assert [row["Ativo"] for row in rows] == ["AAPL"]
+    assert rows[0]["Bloqueios"] == "NOT_VALIDATED"

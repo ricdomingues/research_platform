@@ -1,0 +1,41 @@
+{
+  "as_of": "2025-11-26T21:30:00+00:00",
+  "data_as_of": "2000-01-01T00:00:00+00:00",
+  "signals": [
+    {
+      "direction": "LONG",
+      "entry_zone_high": "102",
+      "entry_zone_low": "100",
+      "order_id": "00000000-0000-4000-8000-000000000004",
+      "order_status": "PENDING",
+      "reason": "MANUAL_REVIEW_REQUIRED",
+      "signal_id": "00000000-0000-4000-8000-000000000005",
+      "state": "EXIT",
+      "stop": "97",
+      "strategy": "REXSHARE",
+      "strategy_version": "1.0",
+      "target1": "106",
+      "target2": "110",
+      "ticker": "MSFT",
+      "valid_until_ts": "2025-12-01T21:00:00+00:00"
+    },
+    {
+      "direction": "LONG",
+      "entry_zone_high": "102",
+      "entry_zone_low": "100",
+      "order_id": "00000000-0000-4000-8000-000000000002",
+      "order_status": "CLOSED",
+      "reason": "TARGET_FINAL",
+      "signal_id": "00000000-0000-4000-8000-000000000003",
+      "state": "EXIT",
+      "stop": "97",
+      "strategy": "REXSHARE",
+      "strategy_version": "1.0",
+      "target1": "106",
+      "target2": "110",
+      "ticker": "AAPL",
+      "valid_until_ts": "2025-11-28T18:00:00+00:00"
+    }
+  ],
+  "since": "2025-11-26T05:00:00+00:00"
+}
