@@ -16,6 +16,7 @@ from sqlalchemy import Connection, Select, and_, select
 
 from virtual_orders.research.backtest import BacktestStats
 from virtual_orders.research.models import Timeframe
+from virtual_orders.research.promotion import stored_promotion_errors
 from virtual_orders.research.repository import FACT_PATTERN_DETECTION, FACT_SETUP_CANDIDATE
 from virtual_orders.storage.tables import (
     pattern_detections,
@@ -147,10 +148,17 @@ def list_candidates(
         query = _not_superseded(query, setup_candidates.c.pattern_detection_id, FACT_PATTERN_DETECTION)
     query = query.order_by(setup_candidates.c.detected_at.desc(), setup_candidates.c.id.desc())
     rows = []
+    evidence: dict[tuple[str, str], BacktestStats | None] = {}
     for row in conn.execute(query.limit(limit).offset(offset)).mappings():
         item = dict(row)
         document = dict(item.pop("feature_document"))
-        rows.append({**item, "features": _scanner_features(document)})
+        # The panel's WATCH state is these codes (D105): the same policy the promote route refuses with,
+        # read here rather than reimplemented. Evidence is looked up once per pattern and timeframe.
+        key = (str(item["pattern"]), str(item["timeframe"]))
+        if key not in evidence:
+            evidence[key] = latest_backtest_stats(conn, pattern=key[0], timeframe=key[1])
+        blockers = stored_promotion_errors(item, evidence=evidence[key])
+        rows.append({**item, "features": _scanner_features(document), "promotion_blockers": list(blockers)})
     return rows
 
 
