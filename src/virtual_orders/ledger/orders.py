@@ -108,6 +108,11 @@ def _signal(row: Any) -> SignalRow:
     )
 
 
+def signal_from_row(row: Any) -> SignalRow:
+    """A `SignalRow` from a `signals` row selected elsewhere: read models select many at once."""
+    return _signal(row)
+
+
 def get_signal(conn: Connection, signal_id: UUID) -> SignalRow:
     row = conn.execute(select(signals).where(signals.c.id == signal_id)).first()
     if row is None:
